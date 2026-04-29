@@ -553,6 +553,21 @@ class DrivingSceneDetectorNode:
         self.point_cloud_projection_max_points = int(
             rospy.get_param("~point_cloud_projection_max_points", 350)
         )
+        self.point_cloud_bev_forward_range_m = float(
+            rospy.get_param("~point_cloud_bev_forward_range_m", 4.0)
+        )
+        self.point_cloud_bev_rear_range_m = float(
+            rospy.get_param("~point_cloud_bev_rear_range_m", 0.6)
+        )
+        self.point_cloud_bev_half_width_m = float(
+            rospy.get_param("~point_cloud_bev_half_width_m", 2.5)
+        )
+        self.point_cloud_bev_max_height_abs_m = float(
+            rospy.get_param("~point_cloud_bev_max_height_abs_m", 2.0)
+        )
+        self.point_cloud_bev_max_points = int(
+            rospy.get_param("~point_cloud_bev_max_points", 1400)
+        )
         self.point_cloud_overlay_point_radius_px = int(
             rospy.get_param("~point_cloud_overlay_point_radius_px", 2)
         )
@@ -981,17 +996,34 @@ class DrivingSceneDetectorNode:
         if anchor_x is None or anchor_y is None:
             return None
 
+        context_points = []
+        max_forward = max(1.0, float(self.point_cloud_bev_forward_range_m))
+        max_rear = max(0.0, float(self.point_cloud_bev_rear_range_m))
+        half_width = max(0.5, float(self.point_cloud_bev_half_width_m))
+        max_height_abs = max(0.3, float(self.point_cloud_bev_max_height_abs_m))
+
         cluster_points = []
         radius = max(0.10, float(self.point_cloud_anchor_radius_m))
         for point_xyz in point_cloud_entry.get("points_xyz") or []:
+            px = float(point_xyz[0])
+            py = float(point_xyz[1])
+            pz = float(point_xyz[2])
+            if (-max_rear) <= px <= max_forward and abs(py) <= half_width and abs(pz) <= max_height_abs:
+                context_points.append(point_xyz)
             dx = float(point_xyz[0]) - float(anchor_x)
             dy = float(point_xyz[1]) - float(anchor_y)
             dz = float(point_xyz[2]) - float(anchor_z or 0.0)
             if (dx * dx + dy * dy + dz * dz) ** 0.5 <= radius:
                 cluster_points.append(point_xyz)
 
-        if not cluster_points:
+        if not context_points:
             return None
+
+        sampled_context_points = context_points
+        max_context_points = max(120, int(self.point_cloud_bev_max_points))
+        if len(sampled_context_points) > max_context_points:
+            stride = int(math.ceil(float(len(sampled_context_points)) / float(max_context_points)))
+            sampled_context_points = sampled_context_points[::stride]
 
         sampled_cluster_points = cluster_points
         max_points = max(40, int(self.point_cloud_projection_max_points))
@@ -1008,7 +1040,13 @@ class DrivingSceneDetectorNode:
                 "z": float(anchor_z or 0.0),
             },
             "point_count": len(cluster_points),
+            "context_point_count": len(context_points),
+            "context_sampled_point_count": len(sampled_context_points),
             "sampled_point_count": len(sampled_cluster_points),
+            "context_points_xyz": [
+                [float(point_xyz[0]), float(point_xyz[1]), float(point_xyz[2])]
+                for point_xyz in sampled_context_points
+            ],
             "cluster_points_xyz": [
                 [float(point_xyz[0]), float(point_xyz[1]), float(point_xyz[2])]
                 for point_xyz in sampled_cluster_points
@@ -1016,6 +1054,9 @@ class DrivingSceneDetectorNode:
             "distance_hint_m": hint.get("distance_hint_m"),
             "projected_available": False,
         }
+
+        if not cluster_points:
+            return visual
 
         camera_projection = self._current_camera_projection()
         if camera_projection is None:

@@ -101,7 +101,7 @@ roslaunch xai_driving_explainer xai_driving_explainer.launch
 - `/xai/driving_vlm_explanations`
   이름은 legacy이지만, 기본 설정에서는 detector 결과 payload를 담는다
 - `/xai/driving_camera_overlay`
-  기본값은 검은 배경의 `lidar_only` 화면 위에 선택된 LiDAR cluster를 BEV(top-down)로 렌더링하고 설명만 표시한다
+  기본값은 검은 배경의 `lidar_only` 화면 위에 전방 non-ground point cloud context와 선택된 LiDAR cluster를 BEV(top-down)로 렌더링하고 설명만 표시한다
   detector bbox는 내부 판단에만 사용한다
 
 ## Bag 으로 직접 돌려보기

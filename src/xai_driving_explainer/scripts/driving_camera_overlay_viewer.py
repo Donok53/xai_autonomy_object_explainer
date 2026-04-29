@@ -365,8 +365,9 @@ class DrivingCameraOverlayViewer:
         if not isinstance(pointcloud_visual, dict) or not pointcloud_visual.get("available"):
             return image_bgr
 
+        context_points = pointcloud_visual.get("context_points_xyz") or []
         cluster_points = pointcloud_visual.get("cluster_points_xyz") or []
-        if not cluster_points:
+        if not context_points and not cluster_points:
             return image_bgr
 
         annotated = image_bgr
@@ -415,6 +416,21 @@ class DrivingCameraOverlayViewer:
         )
         annotated = cv2.addWeighted(overlay, 0.45, annotated, 0.55, 0.0)
 
+        for point_xyz in context_points:
+            px, py = world_to_canvas(point_xyz)
+            if px < side_margin or px >= (canvas_w - side_margin):
+                continue
+            if py < top_margin or py >= (canvas_h - bottom_margin):
+                continue
+            cv2.circle(
+                annotated,
+                (px, py),
+                max(1, point_radius_px - 1),
+                (80, 80, 80),
+                -1,
+                lineType=cv2.LINE_AA,
+            )
+
         for point_xyz in cluster_points:
             px, py = world_to_canvas(point_xyz)
             if px < side_margin or px >= (canvas_w - side_margin):
@@ -459,7 +475,10 @@ class DrivingCameraOverlayViewer:
         cv2.fillConvexPoly(annotated, robot_triangle, (120, 120, 120))
         cv2.circle(annotated, robot_px, 3, (220, 220, 220), -1, lineType=cv2.LINE_AA)
 
-        info_text = "LiDAR {}pts".format(int(pointcloud_visual.get("point_count") or 0))
+        info_text = "LiDAR {}pts | selected {}pts".format(
+            int(pointcloud_visual.get("context_point_count") or len(context_points)),
+            int(pointcloud_visual.get("point_count") or len(cluster_points)),
+        )
         if pointcloud_visual.get("distance_hint_m") is not None:
             try:
                 info_text += " | {:.1f}m".format(float(pointcloud_visual.get("distance_hint_m")))

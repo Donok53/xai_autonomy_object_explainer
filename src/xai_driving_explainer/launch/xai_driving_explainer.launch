@@ -81,6 +81,11 @@
   <arg name="scene_detector_point_cloud_anchor_radius_m" default="0.45"/>
   <arg name="scene_detector_point_cloud_projection_max_range_m" default="6.0"/>
   <arg name="scene_detector_point_cloud_projection_max_points" default="350"/>
+  <arg name="scene_detector_point_cloud_bev_forward_range_m" default="4.0"/>
+  <arg name="scene_detector_point_cloud_bev_rear_range_m" default="0.6"/>
+  <arg name="scene_detector_point_cloud_bev_half_width_m" default="2.5"/>
+  <arg name="scene_detector_point_cloud_bev_max_height_abs_m" default="2.0"/>
+  <arg name="scene_detector_point_cloud_bev_max_points" default="1400"/>
   <arg name="scene_detector_point_cloud_overlay_point_radius_px" default="2"/>
   <arg name="scene_detector_point_cloud_association_iou_threshold" default="0.03"/>
   <arg name="scene_detector_point_cloud_association_center_match_px" default="80.0"/>
@@ -195,6 +200,11 @@
     <param name="point_cloud_anchor_radius_m" value="$(arg scene_detector_point_cloud_anchor_radius_m)"/>
     <param name="point_cloud_projection_max_range_m" value="$(arg scene_detector_point_cloud_projection_max_range_m)"/>
     <param name="point_cloud_projection_max_points" value="$(arg scene_detector_point_cloud_projection_max_points)"/>
+    <param name="point_cloud_bev_forward_range_m" value="$(arg scene_detector_point_cloud_bev_forward_range_m)"/>
+    <param name="point_cloud_bev_rear_range_m" value="$(arg scene_detector_point_cloud_bev_rear_range_m)"/>
+    <param name="point_cloud_bev_half_width_m" value="$(arg scene_detector_point_cloud_bev_half_width_m)"/>
+    <param name="point_cloud_bev_max_height_abs_m" value="$(arg scene_detector_point_cloud_bev_max_height_abs_m)"/>
+    <param name="point_cloud_bev_max_points" value="$(arg scene_detector_point_cloud_bev_max_points)"/>
     <param name="point_cloud_overlay_point_radius_px" value="$(arg scene_detector_point_cloud_overlay_point_radius_px)"/>
     <param name="point_cloud_association_iou_threshold" value="$(arg scene_detector_point_cloud_association_iou_threshold)"/>
     <param name="point_cloud_association_center_match_px" value="$(arg scene_detector_point_cloud_association_center_match_px)"/>
