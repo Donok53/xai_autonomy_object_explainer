@@ -23,6 +23,7 @@
   <arg name="vlm_log_explanation" default="true"/>
   <arg name="camera_display_window" default="true"/>
   <arg name="camera_render_mode" default="lidar_only"/>
+  <arg name="camera_lidar_render_style" default="perspective_3d"/>
   <arg name="camera_show_detector_boxes" default="false"/>
   <arg name="camera_show_pointcloud_bbox" default="false"/>
   <arg name="camera_lidar_bev_max_forward_m" default="20.0"/>
@@ -235,6 +236,7 @@
     <param name="output_topic" value="$(arg camera_overlay_output_topic)"/>
     <param name="display_window" value="$(arg camera_display_window)"/>
     <param name="render_mode" value="$(arg camera_render_mode)"/>
+    <param name="lidar_render_style" value="$(arg camera_lidar_render_style)"/>
     <param name="show_detector_boxes" value="$(arg camera_show_detector_boxes)"/>
     <param name="show_pointcloud_bbox" value="$(arg camera_show_pointcloud_bbox)"/>
     <param name="vlm_image_match_tolerance_s" value="$(arg vlm_image_match_tolerance_s)"/>

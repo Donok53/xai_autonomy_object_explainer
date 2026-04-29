@@ -91,6 +91,9 @@ class DrivingCameraOverlayViewer:
         self.render_mode = str(
             rospy.get_param("~render_mode", "lidar_only")
         ).strip().lower()
+        self.lidar_render_style = str(
+            rospy.get_param("~lidar_render_style", "perspective_3d")
+        ).strip().lower()
         self.show_detector_boxes = bool(
             rospy.get_param("~show_detector_boxes", False)
         )
@@ -161,13 +164,14 @@ class DrivingCameraOverlayViewer:
         )
 
         rospy.loginfo(
-            "driving_camera_overlay_viewer started | image=%s point_cloud=%s explanation=%s vlm=%s output=%s render_mode=%s",
+            "driving_camera_overlay_viewer started | image=%s point_cloud=%s explanation=%s vlm=%s output=%s render_mode=%s lidar_style=%s",
             self.image_topic,
             self.point_cloud_topic,
             self.explanation_topic,
             self.vlm_topic,
             self.output_topic,
             self.render_mode,
+            self.lidar_render_style,
         )
 
     def _init_fonts(self):
@@ -600,12 +604,250 @@ class DrivingCameraOverlayViewer:
         )
         return annotated
 
+    def _draw_lidar_perspective(self, image_bgr, payload, raw_points=None):
+        pointcloud_visual = (
+            (payload or {})
+            .get("detector_details", {})
+            .get("pointcloud_visual", {})
+        )
+        if not isinstance(pointcloud_visual, dict):
+            pointcloud_visual = {}
+        raw_points = list(raw_points or [])
+        if not raw_points and not pointcloud_visual.get("available"):
+            return image_bgr
+
+        context_points = raw_points or pointcloud_visual.get("context_points_xyz") or []
+        cluster_points = pointcloud_visual.get("cluster_points_xyz") or []
+        if not context_points and not cluster_points:
+            return image_bgr
+
+        annotated = image_bgr
+        canvas_h, canvas_w = annotated.shape[:2]
+        top_margin = 185
+        bottom_margin = 32
+        side_margin = 24
+        draw_h = max(40, canvas_h - top_margin - bottom_margin)
+        draw_w = max(40, canvas_w - (2 * side_margin))
+
+        max_forward_m = max(2.0, float(self.lidar_bev_max_forward_m))
+        max_rear_m = max(0.5, float(self.lidar_bev_rear_m))
+        half_width_m = max(0.5, float(self.lidar_bev_half_width_m))
+        point_radius_px = max(1, int(self.lidar_bev_point_radius_px))
+
+        camera_position = np.array(
+            [
+                -0.35 * max_forward_m,
+                0.0,
+                max(4.0, 0.35 * half_width_m),
+            ],
+            dtype=np.float32,
+        )
+        look_at = np.array(
+            [
+                0.35 * max_forward_m,
+                0.0,
+                0.4,
+            ],
+            dtype=np.float32,
+        )
+        world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        forward = look_at - camera_position
+        forward_norm = np.linalg.norm(forward)
+        if forward_norm < 1e-6:
+            return annotated
+        forward = forward / forward_norm
+        right = np.cross(forward, world_up)
+        right_norm = np.linalg.norm(right)
+        if right_norm < 1e-6:
+            right = np.array([0.0, -1.0, 0.0], dtype=np.float32)
+        else:
+            right = right / right_norm
+        up = np.cross(right, forward)
+        up_norm = np.linalg.norm(up)
+        if up_norm >= 1e-6:
+            up = up / up_norm
+
+        focal_px = 0.82 * min(draw_w, draw_h)
+        principal_x = canvas_w * 0.50
+        principal_y = top_margin + (draw_h * 0.64)
+
+        def project_point(point_xyz):
+            point = np.array(
+                [float(point_xyz[0]), float(point_xyz[1]), float(point_xyz[2])],
+                dtype=np.float32,
+            )
+            relative = point - camera_position
+            cam_x = float(np.dot(relative, right))
+            cam_y = float(np.dot(relative, up))
+            cam_z = float(np.dot(relative, forward))
+            if cam_z <= 0.15:
+                return None
+            px = int(round(principal_x + ((cam_x / cam_z) * focal_px)))
+            py = int(round(principal_y - ((cam_y / cam_z) * focal_px)))
+            if px < side_margin or px >= (canvas_w - side_margin):
+                return None
+            if py < top_margin or py >= (canvas_h - bottom_margin):
+                return None
+            return px, py, cam_z
+
+        overlay = annotated.copy()
+        grid_color = (30, 30, 30)
+        grid_forward_values = np.arange(
+            -max_rear_m,
+            max_forward_m + 0.001,
+            5.0,
+        )
+        grid_lateral_values = np.arange(
+            -half_width_m,
+            half_width_m + 0.001,
+            5.0,
+        )
+        for forward_m in grid_forward_values:
+            grid_points = []
+            for lateral_m in np.linspace(-half_width_m, half_width_m, num=25):
+                projected = project_point((forward_m, lateral_m, 0.0))
+                if projected is not None:
+                    grid_points.append((projected[0], projected[1]))
+            if len(grid_points) >= 2:
+                cv2.polylines(
+                    overlay,
+                    [np.array(grid_points, dtype=np.int32)],
+                    False,
+                    grid_color,
+                    1,
+                    cv2.LINE_AA,
+                )
+        for lateral_m in grid_lateral_values:
+            grid_points = []
+            for forward_m in np.linspace(-max_rear_m, max_forward_m, num=28):
+                projected = project_point((forward_m, lateral_m, 0.0))
+                if projected is not None:
+                    grid_points.append((projected[0], projected[1]))
+            if len(grid_points) >= 2:
+                cv2.polylines(
+                    overlay,
+                    [np.array(grid_points, dtype=np.int32)],
+                    False,
+                    grid_color,
+                    1,
+                    cv2.LINE_AA,
+                )
+        annotated = cv2.addWeighted(overlay, 0.55, annotated, 0.45, 0.0)
+
+        def draw_points(points_xyz, color_bgr, radius_px, sort_near_last=False):
+            ordered = list(points_xyz)
+            if sort_near_last:
+                ordered.sort(key=lambda p: float(p[0]))
+            for point_xyz in ordered:
+                projected = project_point(point_xyz)
+                if projected is None:
+                    continue
+                px, py, cam_z = projected
+                depth_scale = max(0.55, min(1.45, 4.0 / max(0.5, cam_z)))
+                radius = max(1, int(round(radius_px * depth_scale)))
+                cv2.circle(
+                    annotated,
+                    (px, py),
+                    radius,
+                    color_bgr,
+                    -1,
+                    lineType=cv2.LINE_AA,
+                )
+
+        draw_points(context_points, (235, 206, 135), max(1, point_radius_px - 1), sort_near_last=False)
+        draw_points(cluster_points, (0, 0, 255), point_radius_px + 1, sort_near_last=True)
+
+        selected_detection = (
+            (payload or {})
+            .get("detector_details", {})
+            .get("selected_detection", {})
+        )
+        label_text = "-"
+        if isinstance(selected_detection, dict):
+            label_ko = selected_detection.get("label_ko") or selected_detection.get("label") or "장애물"
+            id_parts = []
+            if selected_detection.get("memory_id"):
+                id_parts.append(str(selected_detection.get("memory_id")))
+            if selected_detection.get("track_key"):
+                id_parts.append(str(selected_detection.get("track_key")))
+            if id_parts:
+                label_text = "{} | {}".format(" / ".join(id_parts), label_ko)
+            else:
+                label_text = str(label_ko)
+
+        anchor_xyz = pointcloud_visual.get("anchor_xyz") or {}
+        if anchor_xyz:
+            projected_anchor = project_point(
+                (
+                    float(anchor_xyz.get("x") or 0.0),
+                    float(anchor_xyz.get("y") or 0.0),
+                    float(anchor_xyz.get("z") or 0.0),
+                )
+            )
+            if projected_anchor is not None:
+                anchor_px, anchor_py, _ = projected_anchor
+                cv2.circle(
+                    annotated,
+                    (anchor_px, anchor_py),
+                    max(4, point_radius_px + 3),
+                    (0, 0, 255),
+                    2,
+                    lineType=cv2.LINE_AA,
+                )
+                annotated = self._draw_unicode_text(
+                    annotated,
+                    label_text,
+                    (anchor_px + 12, max(top_margin + 10, anchor_py - 12)),
+                    (0, 80, 255),
+                    self.text_font,
+                    max_width_px=max(180, canvas_w - anchor_px - 24),
+                    line_height=self.line_height,
+                )
+
+        robot_origin = project_point((0.0, 0.0, 0.0))
+        robot_forward = project_point((1.0, 0.0, 0.0))
+        if robot_origin is not None:
+            origin_px, origin_py, _ = robot_origin
+            cv2.circle(annotated, (origin_px, origin_py), 5, (220, 220, 220), -1, lineType=cv2.LINE_AA)
+            if robot_forward is not None:
+                fwd_px, fwd_py, _ = robot_forward
+                cv2.arrowedLine(
+                    annotated,
+                    (origin_px, origin_py),
+                    (fwd_px, fwd_py),
+                    (180, 180, 180),
+                    2,
+                    cv2.LINE_AA,
+                    tipLength=0.25,
+                )
+
+        info_text = "LiDAR {}pts | selected {}pts | 3D".format(
+            int(pointcloud_visual.get("context_point_count") or len(context_points)),
+            int(pointcloud_visual.get("point_count") or len(cluster_points)),
+        )
+        if pointcloud_visual.get("distance_hint_m") is not None:
+            try:
+                info_text += " | {:.1f}m".format(float(pointcloud_visual.get("distance_hint_m")))
+            except Exception:
+                pass
+        annotated = self._draw_unicode_text(
+            annotated,
+            info_text,
+            (20, max(190, canvas_h - 26)),
+            (235, 206, 135),
+            self.text_font,
+            max_width_px=canvas_w - 40,
+            line_height=self.line_height,
+        )
+        return annotated
+
     def _annotate_image(self, image_bgr, image_stamp=None):
         explanation = self.latest_explanation or {}
         vlm = self._select_vlm_for_image(image_stamp)
         selected = (vlm or {}).get("detector_details", {}).get("selected_detection") or {}
         memory_id = selected.get("memory_id")
         track_key = selected.get("track_key")
+        label_ko = selected.get("label_ko") or selected.get("label")
         selected_id_text = "-"
         selected_id_parts = []
         if memory_id:
@@ -614,6 +856,8 @@ class DrivingCameraOverlayViewer:
             selected_id_parts.append(str(track_key))
         if selected_id_parts:
             selected_id_text = " / ".join(selected_id_parts)
+        if label_ko:
+            selected_id_text = "{} ({})".format(selected_id_text, label_ko) if selected_id_text != "-" else str(label_ko)
 
         if self.render_mode == "camera":
             base_image = image_bgr.copy()
@@ -624,11 +868,18 @@ class DrivingCameraOverlayViewer:
         if self.render_mode == "camera":
             annotated = self._draw_pointcloud_overlay(annotated, vlm)
         else:
-            annotated = self._draw_lidar_bev(
-                annotated,
-                vlm,
-                raw_points=self.latest_point_cloud_points,
-            )
+            if self.lidar_render_style == "bev":
+                annotated = self._draw_lidar_bev(
+                    annotated,
+                    vlm,
+                    raw_points=self.latest_point_cloud_points,
+                )
+            else:
+                annotated = self._draw_lidar_perspective(
+                    annotated,
+                    vlm,
+                    raw_points=self.latest_point_cloud_points,
+                )
         annotated = self._draw_detector_boxes(annotated, vlm)
 
         lines = [
@@ -683,6 +934,7 @@ class DrivingCameraOverlayViewer:
         selected = (vlm or {}).get("detector_details", {}).get("selected_detection") or {}
         memory_id = selected.get("memory_id")
         track_key = selected.get("track_key")
+        label_ko = selected.get("label_ko") or selected.get("label")
         selected_id_text = "-"
         selected_id_parts = []
         if memory_id:
@@ -691,17 +943,26 @@ class DrivingCameraOverlayViewer:
             selected_id_parts.append(str(track_key))
         if selected_id_parts:
             selected_id_text = " / ".join(selected_id_parts)
+        if label_ko:
+            selected_id_text = "{} ({})".format(selected_id_text, label_ko) if selected_id_text != "-" else str(label_ko)
 
         canvas = np.zeros(
             (max(360, self.lidar_canvas_height_px), max(640, self.lidar_canvas_width_px), 3),
             dtype=np.uint8,
         )
         annotated = self._draw_overlay_panel(canvas)
-        annotated = self._draw_lidar_bev(
-            annotated,
-            vlm,
-            raw_points=self.latest_point_cloud_points,
-        )
+        if self.lidar_render_style == "bev":
+            annotated = self._draw_lidar_bev(
+                annotated,
+                vlm,
+                raw_points=self.latest_point_cloud_points,
+            )
+        else:
+            annotated = self._draw_lidar_perspective(
+                annotated,
+                vlm,
+                raw_points=self.latest_point_cloud_points,
+            )
 
         final_text = (vlm or {}).get("final_combined_explanation_ko")
         if not final_text:
