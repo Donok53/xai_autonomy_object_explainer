@@ -123,13 +123,13 @@ def parse_args():
         help="sequential 모드에서 시작할 샘플 인덱스",
     )
     parser.add_argument("--max-sync-dt-s", type=float, default=0.12)
-    parser.add_argument("--max-cloud-points", type=int, default=18000)
+    parser.add_argument("--max-cloud-points", type=int, default=30000)
     parser.add_argument("--forward-m", type=float, default=12.0)
     parser.add_argument("--rear-m", type=float, default=2.0)
     parser.add_argument("--half-width-m", type=float, default=8.0)
     parser.add_argument("--height-abs-m", type=float, default=2.5)
     parser.add_argument("--max-range-m", type=float, default=12.0)
-    parser.add_argument("--point-radius-px", type=int, default=2)
+    parser.add_argument("--point-radius-px", type=int, default=1)
     parser.add_argument("--overview-width-px", type=int, default=560)
     parser.add_argument(
         "--camera-frustum-margin-deg",
@@ -735,10 +735,10 @@ def render_projection(sample, camera_info, state, args):
             "on" if state.get("use_camera_frustum_filter", True) else "off",
             float(args.camera_frustum_margin_deg),
         ),
-        "step t={:.3f}m r={:.2f}deg | n/p sample | f frustum on/off | g ref capture | c ref clear | s save | q quit".format(
+        "step t={:.3f}m r={:.2f}deg | n/p sample | f angle-filter on/off | g ref capture | c ref clear | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
         ),
-        "1/2:image-x  3/4:image-y  5/6:depth  u/o:roll  i/k:pitch  j/l:yaw  [-]/[=]:step",
+        "1/2:left-right  3/4:up-down  5/6:near-far  u/o:roll  i/k:tilt  j/l:turn  [-]/[=]:step",
     ]
     y = 24
     for line in lines:
@@ -762,6 +762,7 @@ def render_projection(sample, camera_info, state, args):
         camera_info,
         quaternion_xyzw,
         translation,
+        bool(state.get("use_camera_frustum_filter", False)),
         args,
         image_h,
         overview_width,
@@ -795,6 +796,16 @@ def _normalize_xy_direction(vector_xyz, fallback_xy):
     return direction_xy / norm
 
 
+def _horizontal_fov_half_angle_rad(camera_info, extra_margin_deg=0.0):
+    fx = max(1e-9, float(camera_info["fx"]))
+    cx = float(camera_info["cx"])
+    image_w = max(2.0, float(camera_info["width"]))
+    left_angle = math.atan2(-cx, fx)
+    right_angle = math.atan2((image_w - 1.0) - cx, fx)
+    half_angle = 0.5 * abs(right_angle - left_angle)
+    return max(1e-3, half_angle + math.radians(float(extra_margin_deg)))
+
+
 def draw_lidar_overview(
     context_points_lidar,
     highlighted_points_lidar,
@@ -803,6 +814,7 @@ def draw_lidar_overview(
     camera_info,
     quaternion_xyzw,
     translation_lidar_to_camera,
+    use_camera_frustum_filter,
     args,
     canvas_h,
     canvas_w,
@@ -878,34 +890,18 @@ def draw_lidar_overview(
     rotation_lidar_to_camera = rotation_matrix_from_quaternion(quaternion_xyzw)
     camera_origin_lidar = -rotation_lidar_to_camera.T.dot(np.asarray(translation_lidar_to_camera, dtype=np.float64))
     camera_center_ray = rotation_lidar_to_camera.T.dot(np.array([0.0, 0.0, 1.0], dtype=np.float64))
-    left_ray_camera = _normalize_vector(
-        np.array(
-            [
-                (0.0 - float(camera_info["cx"])) / max(1e-9, float(camera_info["fx"])),
-                0.0,
-                1.0,
-            ],
-            dtype=np.float64,
-        )
-    )
-    right_ray_camera = _normalize_vector(
-        np.array(
-            [
-                ((float(camera_info["width"]) - 1.0) - float(camera_info["cx"])) / max(1e-9, float(camera_info["fx"])),
-                0.0,
-                1.0,
-            ],
-            dtype=np.float64,
-        )
-    )
-    camera_left_ray = rotation_lidar_to_camera.T.dot(left_ray_camera)
-    camera_right_ray = rotation_lidar_to_camera.T.dot(right_ray_camera)
-
     camera_origin_px = world_to_canvas((camera_origin_lidar[0], camera_origin_lidar[1], camera_origin_lidar[2]))
-    ray_length_m = min(max_forward_m, 4.0)
+    ray_length_m = min(max_forward_m, 8.0)
     center_xy = _normalize_xy_direction(camera_center_ray, (1.0, 0.0))
-    left_xy = _normalize_xy_direction(camera_left_ray, tuple(center_xy))
-    right_xy = _normalize_xy_direction(camera_right_ray, tuple(center_xy))
+    center_heading_rad = math.atan2(float(center_xy[1]), float(center_xy[0]))
+    half_hfov_rad = _horizontal_fov_half_angle_rad(
+        camera_info,
+        args.camera_frustum_margin_deg if use_camera_frustum_filter else 0.0,
+    )
+    left_heading_rad = center_heading_rad + half_hfov_rad
+    right_heading_rad = center_heading_rad - half_hfov_rad
+    left_xy = np.array([math.cos(left_heading_rad), math.sin(left_heading_rad)], dtype=np.float64)
+    right_xy = np.array([math.cos(right_heading_rad), math.sin(right_heading_rad)], dtype=np.float64)
     center_tip = world_to_canvas(
         (
             camera_origin_lidar[0] + (center_xy[0] * ray_length_m),
@@ -936,11 +932,11 @@ def draw_lidar_overview(
         ],
         dtype=np.int32,
     )
-    cv2.fillConvexPoly(fov_overlay, fov_polygon, (180, 110, 20))
-    canvas = cv2.addWeighted(fov_overlay, 0.42, canvas, 0.58, 0.0)
+    cv2.fillConvexPoly(fov_overlay, fov_polygon, (255, 80, 0))
+    canvas = cv2.addWeighted(fov_overlay, 0.58, canvas, 0.42, 0.0)
     cv2.line(canvas, camera_origin_px, center_tip, (255, 255, 0), 2, cv2.LINE_AA)
-    cv2.line(canvas, camera_origin_px, left_tip, (255, 220, 80), 3, cv2.LINE_AA)
-    cv2.line(canvas, camera_origin_px, right_tip, (255, 220, 80), 3, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, left_tip, (255, 180, 40), 4, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, right_tip, (255, 180, 40), 4, cv2.LINE_AA)
     cv2.circle(canvas, camera_origin_px, 4, (255, 255, 0), -1, lineType=cv2.LINE_AA)
 
     robot_triangle = np.array(
@@ -958,7 +954,7 @@ def draw_lidar_overview(
         "LiDAR overview (BEV)",
         "gray: context  red: board-candidate",
         "green: reference snapshot",
-        "yellow: camera center  amber: camera FOV area",
+        "yellow: camera center  blue: camera FOV area",
     ]
     y = 22
     for line in title_lines:
@@ -1055,7 +1051,7 @@ def main():
         "yaw_deg": math.degrees(init_yaw),
         "translation_step_m": 0.005,
         "rotation_step_deg": 0.5,
-        "use_camera_frustum_filter": True,
+        "use_camera_frustum_filter": False,
         "reference_projected_points_uv": [],
         "reference_highlighted_points_uv": [],
         "reference_context_points_lidar": [],
