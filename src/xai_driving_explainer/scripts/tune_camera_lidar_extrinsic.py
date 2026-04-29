@@ -130,6 +130,7 @@ def parse_args():
     parser.add_argument("--height-abs-m", type=float, default=2.5)
     parser.add_argument("--max-range-m", type=float, default=12.0)
     parser.add_argument("--point-radius-px", type=int, default=2)
+    parser.add_argument("--overview-width-px", type=int, default=560)
     parser.add_argument(
         "--camera-frustum-margin-deg",
         type=float,
@@ -542,12 +543,15 @@ def render_projection(sample, camera_info, state, args):
         )
 
     projected_count = 0
+    context_points_lidar = []
+    highlighted_points_lidar = []
     for point_xyz in sample["points_xyz"]:
         px, py, pz = point_xyz
         if px < (-args.rear_m) or px > args.forward_m:
             continue
         if abs(py) > args.half_width_m or abs(pz) > args.height_abs_m:
             continue
+        context_points_lidar.append((px, py, pz))
 
         rotated = rotate_point_by_quaternion(point_xyz, quaternion_xyzw)
         camera_x = rotated[0] + translation[0]
@@ -616,6 +620,7 @@ def render_projection(sample, camera_info, state, args):
             if image_match and radius_match and plane_match:
                 point_color = (0, 0, 255)
                 highlighted_board_count += 1
+                highlighted_points_lidar.append((px, py, pz))
         cv2.circle(
             image_bgr,
             (int(round(u)), int(round(v))),
@@ -691,7 +696,170 @@ def render_projection(sample, camera_info, state, args):
             cv2.LINE_AA,
         )
         y += 24
-    return image_bgr, quaternion_xyzw
+    overview_width = max(320, int(args.overview_width_px))
+    overview_bgr = draw_lidar_overview(
+        context_points_lidar,
+        highlighted_points_lidar,
+        camera_info,
+        quaternion_xyzw,
+        translation,
+        args,
+        image_h,
+        overview_width,
+    )
+    combined = np.hstack((image_bgr, overview_bgr))
+    return combined, quaternion_xyzw
+
+
+def _normalize_vector(vector_xyz):
+    norm = math.sqrt(
+        float(vector_xyz[0]) * float(vector_xyz[0])
+        + float(vector_xyz[1]) * float(vector_xyz[1])
+        + float(vector_xyz[2]) * float(vector_xyz[2])
+    )
+    if norm <= 1e-9:
+        return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    return np.asarray(vector_xyz, dtype=np.float64) / norm
+
+
+def draw_lidar_overview(
+    context_points_lidar,
+    highlighted_points_lidar,
+    camera_info,
+    quaternion_xyzw,
+    translation_lidar_to_camera,
+    args,
+    canvas_h,
+    canvas_w,
+):
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    top_margin = 56
+    bottom_margin = 36
+    side_margin = 28
+    draw_h = max(40, canvas_h - top_margin - bottom_margin)
+    draw_w = max(40, canvas_w - (2 * side_margin))
+    robot_px = (canvas_w // 2, canvas_h - bottom_margin)
+
+    max_forward_m = max(1.0, float(args.forward_m))
+    max_rear_m = max(0.1, float(args.rear_m))
+    half_width_m = max(0.5, float(args.half_width_m))
+    point_radius_px = max(1, int(args.point_radius_px))
+
+    def world_to_canvas(point_xyz):
+        forward_x = float(point_xyz[0])
+        lateral_y = float(point_xyz[1])
+        norm_y = lateral_y / half_width_m
+        depth_span = max_forward_m + max_rear_m
+        norm_x = (forward_x + max_rear_m) / max(0.1, depth_span)
+        px = int(round((canvas_w * 0.5) - (norm_y * (draw_w * 0.5))))
+        py = int(round((canvas_h - bottom_margin) - (norm_x * draw_h)))
+        return px, py
+
+    grid_color = (40, 40, 40)
+    grid_step_m = 2.0
+    forward_m = -max_rear_m
+    while forward_m <= (max_forward_m + 1e-6):
+        _, py = world_to_canvas((forward_m, 0.0, 0.0))
+        cv2.line(canvas, (side_margin, py), (canvas_w - side_margin, py), grid_color, 1, cv2.LINE_AA)
+        forward_m += grid_step_m
+    lateral_m = -half_width_m
+    while lateral_m <= (half_width_m + 1e-6):
+        px, _ = world_to_canvas((0.0, lateral_m, 0.0))
+        cv2.line(canvas, (px, top_margin), (px, canvas_h - bottom_margin), grid_color, 1, cv2.LINE_AA)
+        lateral_m += grid_step_m
+
+    for point_xyz in context_points_lidar:
+        px, py = world_to_canvas(point_xyz)
+        if px < side_margin or px >= (canvas_w - side_margin):
+            continue
+        if py < top_margin or py >= (canvas_h - bottom_margin):
+            continue
+        cv2.circle(canvas, (px, py), max(1, point_radius_px - 1), (140, 140, 140), -1, lineType=cv2.LINE_AA)
+
+    for point_xyz in highlighted_points_lidar:
+        px, py = world_to_canvas(point_xyz)
+        if px < side_margin or px >= (canvas_w - side_margin):
+            continue
+        if py < top_margin or py >= (canvas_h - bottom_margin):
+            continue
+        cv2.circle(canvas, (px, py), point_radius_px + 1, (0, 0, 255), -1, lineType=cv2.LINE_AA)
+
+    rotation_lidar_to_camera = rotation_matrix_from_quaternion(quaternion_xyzw)
+    camera_origin_lidar = -rotation_lidar_to_camera.T.dot(np.asarray(translation_lidar_to_camera, dtype=np.float64))
+    camera_center_ray = rotation_lidar_to_camera.T.dot(np.array([0.0, 0.0, 1.0], dtype=np.float64))
+    left_ray_camera = _normalize_vector(
+        np.array(
+            [
+                (0.0 - float(camera_info["cx"])) / max(1e-9, float(camera_info["fx"])),
+                0.0,
+                1.0,
+            ],
+            dtype=np.float64,
+        )
+    )
+    right_ray_camera = _normalize_vector(
+        np.array(
+            [
+                ((float(camera_info["width"]) - 1.0) - float(camera_info["cx"])) / max(1e-9, float(camera_info["fx"])),
+                0.0,
+                1.0,
+            ],
+            dtype=np.float64,
+        )
+    )
+    camera_left_ray = rotation_lidar_to_camera.T.dot(left_ray_camera)
+    camera_right_ray = rotation_lidar_to_camera.T.dot(right_ray_camera)
+
+    camera_origin_px = world_to_canvas((camera_origin_lidar[0], camera_origin_lidar[1], camera_origin_lidar[2]))
+    ray_length_m = min(max_forward_m, 4.0)
+    center_tip = world_to_canvas(
+        (
+            camera_origin_lidar[0] + (camera_center_ray[0] * ray_length_m),
+            camera_origin_lidar[1] + (camera_center_ray[1] * ray_length_m),
+            0.0,
+        )
+    )
+    left_tip = world_to_canvas(
+        (
+            camera_origin_lidar[0] + (camera_left_ray[0] * ray_length_m),
+            camera_origin_lidar[1] + (camera_left_ray[1] * ray_length_m),
+            0.0,
+        )
+    )
+    right_tip = world_to_canvas(
+        (
+            camera_origin_lidar[0] + (camera_right_ray[0] * ray_length_m),
+            camera_origin_lidar[1] + (camera_right_ray[1] * ray_length_m),
+            0.0,
+        )
+    )
+    cv2.line(canvas, camera_origin_px, center_tip, (255, 255, 0), 2, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, left_tip, (80, 180, 255), 1, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, right_tip, (80, 180, 255), 1, cv2.LINE_AA)
+    cv2.circle(canvas, camera_origin_px, 4, (255, 255, 0), -1, lineType=cv2.LINE_AA)
+
+    robot_triangle = np.array(
+        [
+            [robot_px[0], robot_px[1] - 14],
+            [robot_px[0] - 10, robot_px[1] + 8],
+            [robot_px[0] + 10, robot_px[1] + 8],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(canvas, robot_triangle, (120, 120, 120))
+    cv2.circle(canvas, robot_px, 3, (220, 220, 220), -1, lineType=cv2.LINE_AA)
+
+    title_lines = [
+        "LiDAR overview (BEV)",
+        "gray: context  red: board-candidate",
+        "yellow: camera center  blue: camera FOV",
+    ]
+    y = 22
+    for line in title_lines:
+        cv2.putText(canvas, line, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+        y += 18
+
+    return canvas
 
 
 def save_yaml(output_path, camera_info, sample, state, quaternion_xyzw):
