@@ -108,7 +108,7 @@ def parse_args():
         default="/planning/linefit_ground/non_ground_cloud",
     )
     parser.add_argument("--max-samples", type=int, default=10)
-    parser.add_argument("--image-stride", type=int, default=20)
+    parser.add_argument("--image-stride", type=int, default=5)
     parser.add_argument("--max-sync-dt-s", type=float, default=0.12)
     parser.add_argument("--max-cloud-points", type=int, default=4500)
     parser.add_argument("--forward-m", type=float, default=12.0)
@@ -122,7 +122,7 @@ def parse_args():
     parser.add_argument("--checker-size-mm", type=float, default=25.0)
     parser.add_argument("--marker-size-mm", type=float, default=18.75)
     parser.add_argument("--dictionary", default="DICT_4X4_50")
-    parser.add_argument("--min-charuco-corners", type=int, default=8)
+    parser.add_argument("--min-charuco-corners", type=int, default=12)
     parser.add_argument("--bbox-padding-px", type=float, default=40.0)
     parser.add_argument("--selection-radius-m", type=float, default=1.2)
     parser.add_argument("--selection-plane-slab-m", type=float, default=0.40)
