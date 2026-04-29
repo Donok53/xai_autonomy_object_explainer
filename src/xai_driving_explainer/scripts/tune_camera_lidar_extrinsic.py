@@ -545,6 +545,8 @@ def render_projection(sample, camera_info, state, args):
     projected_count = 0
     context_points_lidar = []
     highlighted_points_lidar = []
+    projected_points_uv = []
+    highlighted_points_uv = []
     for point_xyz in sample["points_xyz"]:
         px, py, pz = point_xyz
         if px < (-args.rear_m) or px > args.forward_m:
@@ -586,6 +588,7 @@ def render_projection(sample, camera_info, state, args):
         if u < 0.0 or u >= float(image_w) or v < 0.0 or v >= float(image_h):
             continue
         projected_count += 1
+        projected_points_uv.append((float(u), float(v)))
         point_color = (255, 255, 0)
         if (
             board_bbox is not None
@@ -621,6 +624,7 @@ def render_projection(sample, camera_info, state, args):
                 point_color = (0, 0, 255)
                 highlighted_board_count += 1
                 highlighted_points_lidar.append((px, py, pz))
+                highlighted_points_uv.append((float(u), float(v)))
         cv2.circle(
             image_bgr,
             (int(round(u)), int(round(v))),
@@ -657,6 +661,29 @@ def render_projection(sample, camera_info, state, args):
     cv2.rectangle(overlay, (8, 8), (image_w - 8, 150), (0, 0, 0), -1)
     image_bgr = cv2.addWeighted(overlay, 0.35, image_bgr, 0.65, 0.0)
 
+    reference_projected_points_uv = state.get("reference_projected_points_uv") or []
+    reference_highlighted_points_uv = state.get("reference_highlighted_points_uv") or []
+    if reference_projected_points_uv:
+        for u, v in reference_projected_points_uv:
+            cv2.circle(
+                image_bgr,
+                (int(round(u)), int(round(v))),
+                1,
+                (0, 255, 0),
+                -1,
+                lineType=cv2.LINE_AA,
+            )
+    if reference_highlighted_points_uv:
+        for u, v in reference_highlighted_points_uv:
+            cv2.circle(
+                image_bgr,
+                (int(round(u)), int(round(v))),
+                max(2, int(args.point_radius_px)),
+                (0, 200, 0),
+                -1,
+                lineType=cv2.LINE_AA,
+            )
+
     lines = [
         "sample {}/{} | projected {} pts".format(
             state["sample_index"] + 1,
@@ -678,7 +705,7 @@ def render_projection(sample, camera_info, state, args):
             "on" if state.get("use_camera_frustum_filter", True) else "off",
             float(args.camera_frustum_margin_deg),
         ),
-        "step t={:.3f}m r={:.2f}deg | n/p sample | f frustum on/off | s save | q quit".format(
+        "step t={:.3f}m r={:.2f}deg | n/p sample | f frustum on/off | g ref capture | c ref clear | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
         ),
         "1/2:x-+ 3/4:y-+ 5/6:z-+  u/o:roll-+  i/k:pitch-+  j/l:yaw-+  [-] step down  [=] step up",
@@ -700,6 +727,8 @@ def render_projection(sample, camera_info, state, args):
     overview_bgr = draw_lidar_overview(
         context_points_lidar,
         highlighted_points_lidar,
+        state.get("reference_context_points_lidar") or [],
+        state.get("reference_highlighted_points_lidar") or [],
         camera_info,
         quaternion_xyzw,
         translation,
@@ -708,7 +737,7 @@ def render_projection(sample, camera_info, state, args):
         overview_width,
     )
     combined = np.hstack((image_bgr, overview_bgr))
-    return combined, quaternion_xyzw
+    return combined, quaternion_xyzw, projected_points_uv, highlighted_points_uv, context_points_lidar, highlighted_points_lidar
 
 
 def _normalize_vector(vector_xyz):
@@ -725,6 +754,8 @@ def _normalize_vector(vector_xyz):
 def draw_lidar_overview(
     context_points_lidar,
     highlighted_points_lidar,
+    reference_context_points_lidar,
+    reference_highlighted_points_lidar,
     camera_info,
     quaternion_xyzw,
     translation_lidar_to_camera,
@@ -783,6 +814,22 @@ def draw_lidar_overview(
         if py < top_margin or py >= (canvas_h - bottom_margin):
             continue
         cv2.circle(canvas, (px, py), point_radius_px + 1, (0, 0, 255), -1, lineType=cv2.LINE_AA)
+
+    for point_xyz in reference_context_points_lidar:
+        px, py = world_to_canvas(point_xyz)
+        if px < side_margin or px >= (canvas_w - side_margin):
+            continue
+        if py < top_margin or py >= (canvas_h - bottom_margin):
+            continue
+        cv2.circle(canvas, (px, py), 1, (0, 120, 0), -1, lineType=cv2.LINE_AA)
+
+    for point_xyz in reference_highlighted_points_lidar:
+        px, py = world_to_canvas(point_xyz)
+        if px < side_margin or px >= (canvas_w - side_margin):
+            continue
+        if py < top_margin or py >= (canvas_h - bottom_margin):
+            continue
+        cv2.circle(canvas, (px, py), point_radius_px + 1, (0, 255, 0), -1, lineType=cv2.LINE_AA)
 
     rotation_lidar_to_camera = rotation_matrix_from_quaternion(quaternion_xyzw)
     camera_origin_lidar = -rotation_lidar_to_camera.T.dot(np.asarray(translation_lidar_to_camera, dtype=np.float64))
@@ -852,6 +899,7 @@ def draw_lidar_overview(
     title_lines = [
         "LiDAR overview (BEV)",
         "gray: context  red: board-candidate",
+        "green: reference snapshot",
         "yellow: camera center  blue: camera FOV",
     ]
     y = 22
@@ -941,6 +989,10 @@ def main():
         "translation_step_m": 0.01,
         "rotation_step_deg": 1.0,
         "use_camera_frustum_filter": True,
+        "reference_projected_points_uv": [],
+        "reference_highlighted_points_uv": [],
+        "reference_context_points_lidar": [],
+        "reference_highlighted_points_lidar": [],
     }
 
     window_name = "camera_lidar_extrinsic_tuner"
@@ -949,7 +1001,7 @@ def main():
 
     while True:
         sample = samples[state["sample_index"]]
-        rendered, quaternion_xyzw = render_projection(
+        rendered, quaternion_xyzw, projected_points_uv, highlighted_points_uv, context_points_lidar, highlighted_points_lidar = render_projection(
             sample,
             camera_info,
             state,
@@ -972,6 +1024,18 @@ def main():
             continue
         if key == ord("f"):
             state["use_camera_frustum_filter"] = not state["use_camera_frustum_filter"]
+            continue
+        if key == ord("g"):
+            state["reference_projected_points_uv"] = list(projected_points_uv)
+            state["reference_highlighted_points_uv"] = list(highlighted_points_uv)
+            state["reference_context_points_lidar"] = list(context_points_lidar)
+            state["reference_highlighted_points_lidar"] = list(highlighted_points_lidar)
+            continue
+        if key == ord("c"):
+            state["reference_projected_points_uv"] = []
+            state["reference_highlighted_points_uv"] = []
+            state["reference_context_points_lidar"] = []
+            state["reference_highlighted_points_lidar"] = []
             continue
 
         if key == ord("1"):
