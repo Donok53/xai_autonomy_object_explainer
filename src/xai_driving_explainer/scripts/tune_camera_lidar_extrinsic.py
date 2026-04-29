@@ -75,6 +75,11 @@ def parse_args():
     parser.add_argument("--image-topic", default="/camera/color/image_raw")
     parser.add_argument("--camera-info-topic", default="/camera/color/camera_info")
     parser.add_argument(
+        "--camera-info-bag",
+        default="",
+        help="camera_info가 없는 경우 intrinsic을 읽어올 다른 bag 경로",
+    )
+    parser.add_argument(
         "--point-cloud-topic",
         default="/planning/linefit_ground/non_ground_cloud",
     )
@@ -95,6 +100,13 @@ def parse_args():
     parser.add_argument("--qy", type=float, default=0.5)
     parser.add_argument("--qz", type=float, default=-0.5)
     parser.add_argument("--qw", type=float, default=0.5)
+    parser.add_argument("--camera-frame", default="")
+    parser.add_argument("--camera-width", type=int, default=0)
+    parser.add_argument("--camera-height", type=int, default=0)
+    parser.add_argument("--fx", type=float, default=0.0)
+    parser.add_argument("--fy", type=float, default=0.0)
+    parser.add_argument("--cx", type=float, default=0.0)
+    parser.add_argument("--cy", type=float, default=0.0)
     parser.add_argument(
         "--output",
         default=os.path.expanduser("~/camera_lidar_extrinsic_tuned.yaml"),
@@ -124,11 +136,57 @@ def sample_point_cloud(msg, max_points):
     return points
 
 
+def camera_info_from_msg(msg):
+    k_values = list(msg.K)
+    return {
+        "frame_id": str(msg.header.frame_id or ""),
+        "width": int(msg.width or 0),
+        "height": int(msg.height or 0),
+        "fx": float(k_values[0] or 0.0),
+        "fy": float(k_values[4] or 0.0),
+        "cx": float(k_values[2] or 0.0),
+        "cy": float(k_values[5] or 0.0),
+    }
+
+
+def camera_info_from_args(args):
+    required = (
+        float(args.fx),
+        float(args.fy),
+        float(args.cx),
+        float(args.cy),
+        int(args.camera_width),
+        int(args.camera_height),
+    )
+    if not all(value > 0 for value in required):
+        return None
+    return {
+        "frame_id": str(args.camera_frame or "camera_color_optical_frame"),
+        "width": int(args.camera_width),
+        "height": int(args.camera_height),
+        "fx": float(args.fx),
+        "fy": float(args.fy),
+        "cx": float(args.cx),
+        "cy": float(args.cy),
+    }
+
+
+def load_camera_info_from_bag(bag_path, camera_info_topic):
+    bag = rosbag.Bag(bag_path)
+    try:
+        for topic, msg, _ in bag.read_messages(topics=[camera_info_topic]):
+            if topic == camera_info_topic:
+                return camera_info_from_msg(msg)
+    finally:
+        bag.close()
+    return None
+
+
 def load_samples(args):
     bridge = CvBridge()
     samples = []
     latest_cloud = None
-    camera_info = None
+    camera_info = camera_info_from_args(args)
     accepted_images = 0
     bag = rosbag.Bag(args.bag)
     try:
@@ -136,16 +194,7 @@ def load_samples(args):
             topics=[args.camera_info_topic, args.point_cloud_topic, args.image_topic]
         ):
             if topic == args.camera_info_topic and camera_info is None:
-                k_values = list(msg.K)
-                camera_info = {
-                    "frame_id": str(msg.header.frame_id or ""),
-                    "width": int(msg.width or 0),
-                    "height": int(msg.height or 0),
-                    "fx": float(k_values[0] or 0.0),
-                    "fy": float(k_values[4] or 0.0),
-                    "cx": float(k_values[2] or 0.0),
-                    "cy": float(k_values[5] or 0.0),
-                }
+                camera_info = camera_info_from_msg(msg)
                 continue
 
             if topic == args.point_cloud_topic:
@@ -181,8 +230,17 @@ def load_samples(args):
     finally:
         bag.close()
 
+    if camera_info is None and args.camera_info_bag:
+        camera_info = load_camera_info_from_bag(
+            os.path.abspath(args.camera_info_bag),
+            args.camera_info_topic,
+        )
+
     if camera_info is None:
-        raise RuntimeError("camera_info를 bag에서 찾지 못했습니다.")
+        raise RuntimeError(
+            "camera_info를 찾지 못했습니다. "
+            "--camera-info-bag 또는 --fx/--fy/--cx/--cy/--camera-width/--camera-height를 사용하세요."
+        )
     if not samples:
         raise RuntimeError("동기화된 image/point_cloud 샘플을 만들지 못했습니다.")
     return camera_info, samples

@@ -196,6 +196,30 @@ python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
   --bag /home/byeongjae/bagfiles/record_real_20260422_180049.bag
 ```
 
+`camera_info`가 없는 bag라면 다른 bag에서 intrinsic만 읽어와서 같이 쓸 수 있다.
+
+```bash
+python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+  --bag /home/byeongjae/bagfiles/yongbong_checkerboard.bag \
+  --point-cloud-topic /ouster/points \
+  --camera-info-bag /home/byeongjae/bagfiles/record_real_20260422_180049.bag
+```
+
+또는 camera intrinsic을 직접 알고 있다면 수동 입력도 가능하다.
+
+```bash
+python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+  --bag /home/byeongjae/bagfiles/yongbong_checkerboard.bag \
+  --point-cloud-topic /ouster/points \
+  --camera-frame camera_color_optical_frame \
+  --camera-width 640 \
+  --camera-height 480 \
+  --fx 384.9215 \
+  --fy 384.4141 \
+  --cx 328.9431 \
+  --cy 245.7993
+```
+
 기본 입력:
 
 - image: `/camera/color/image_raw`
