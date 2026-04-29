@@ -1,0 +1,28 @@
+default_bag_path: /home/byeongjae/bagfiles/record_real_20260422_180049.bag
+
+topics:
+  image: /camera/color/image_raw
+  lidar: /ouster/points
+  pose: /lio_localizer/odometry/optimization
+  global_path: /astar/path
+  behavior_cmd: /planning/behavior_cmd
+  emergency_stop: /planning/emergency_stop
+  global_obstacle_caution: /planning/global_obstacle_caution
+  planner_snapshot: /xai/planner_snapshot
+  event_log: /xai/event_log
+
+output:
+  root_dir: generated
+  index_filename: event_index.jsonl
+  summary_filename: run_summary.json
+
+explanation:
+  prefer_hybrid_evidence: true
+  camera_role: scene_narration_only
+  planner_role: decision_ground_truth
+  language: ko
+
+vlm_prompt:
+  output_topic: /xai/driving_vlm_prompts
+  prompt_style: planner_grounded_camera_narration
+  output_format: json

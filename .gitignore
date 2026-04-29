@@ -1,0 +1,8 @@
+build/
+devel/
+logs/
+generated/
+__pycache__/
+*.pyc
+*.pyo
+*.swp

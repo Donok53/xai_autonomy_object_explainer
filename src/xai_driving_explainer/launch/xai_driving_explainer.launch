@@ -1,0 +1,86 @@
+<launch>
+  <arg name="planner_snapshot_topic" default="/xai/planner_snapshot"/>
+  <arg name="event_log_topic" default="/xai/event_log"/>
+  <arg name="output_topic" default="/xai/driving_explanations"/>
+  <arg name="vlm_prompt_output_topic" default="/xai/driving_vlm_prompts"/>
+  <arg name="vlm_explanation_output_topic" default="/xai/driving_vlm_explanations"/>
+  <arg name="camera_image_topic" default="/camera/color/image_raw"/>
+  <arg name="camera_overlay_output_topic" default="/xai/driving_camera_overlay"/>
+  <arg name="publish_snapshot_updates" default="false"/>
+  <arg name="enable_vlm_prompt_builder" default="true"/>
+  <arg name="enable_vlm_inference" default="true"/>
+  <arg name="enable_camera_overlay_viewer" default="true"/>
+  <arg name="log_combined_explanation" default="true"/>
+  <arg name="vlm_backend" default="ollama"/>
+  <arg name="vlm_model" default="moondream"/>
+  <arg name="vlm_endpoint" default="http://127.0.0.1:11434/api/chat"/>
+  <arg name="vlm_image_detail" default="low"/>
+  <arg name="vlm_log_explanation" default="true"/>
+  <arg name="camera_display_window" default="true"/>
+  <arg name="vlm_allowed_event_labels" default="path_blocked,path_update"/>
+  <arg name="vlm_request_timeout_s" default="20.0"/>
+  <arg name="vlm_min_request_interval_s" default="1.5"/>
+  <arg name="vlm_max_image_arrival_age_s" default="1.5"/>
+  <arg name="vlm_use_focus_crop" default="true"/>
+  <arg name="vlm_focus_crop_margin_ratio" default="0.10"/>
+  <arg name="vlm_max_image_side_px" default="288"/>
+  <arg name="vlm_jpeg_quality" default="55"/>
+  <arg name="vlm_image_match_tolerance_s" default="0.75"/>
+
+  <node pkg="xai_driving_explainer"
+        type="xai_driving_explainer_node.py"
+        name="xai_driving_explainer"
+        output="screen">
+    <param name="planner_snapshot_topic" value="$(arg planner_snapshot_topic)"/>
+    <param name="event_log_topic" value="$(arg event_log_topic)"/>
+    <param name="output_topic" value="$(arg output_topic)"/>
+    <param name="publish_snapshot_updates" value="$(arg publish_snapshot_updates)"/>
+    <param name="log_combined_explanation" value="$(arg log_combined_explanation)"/>
+  </node>
+
+  <node if="$(arg enable_vlm_prompt_builder)"
+        pkg="xai_driving_explainer"
+        type="driving_vlm_prompt_builder.py"
+        name="driving_vlm_prompt_builder"
+        output="screen">
+    <param name="input_topic" value="$(arg output_topic)"/>
+    <param name="output_topic" value="$(arg vlm_prompt_output_topic)"/>
+    <param name="allowed_event_labels" value="$(arg vlm_allowed_event_labels)"/>
+  </node>
+
+  <node if="$(arg enable_vlm_inference)"
+        pkg="xai_driving_explainer"
+        type="driving_vlm_inference_node.py"
+        name="driving_vlm_inference"
+        output="screen">
+    <param name="prompt_topic" value="$(arg vlm_prompt_output_topic)"/>
+    <param name="image_topic" value="$(arg camera_image_topic)"/>
+    <param name="output_topic" value="$(arg vlm_explanation_output_topic)"/>
+    <param name="backend" value="$(arg vlm_backend)"/>
+    <param name="model" value="$(arg vlm_model)"/>
+    <param name="endpoint" value="$(arg vlm_endpoint)"/>
+    <param name="image_detail" value="$(arg vlm_image_detail)"/>
+    <param name="log_vlm_explanation" value="$(arg vlm_log_explanation)"/>
+    <param name="allowed_event_labels" value="$(arg vlm_allowed_event_labels)"/>
+    <param name="request_timeout_s" value="$(arg vlm_request_timeout_s)"/>
+    <param name="min_request_interval_s" value="$(arg vlm_min_request_interval_s)"/>
+    <param name="max_image_arrival_age_s" value="$(arg vlm_max_image_arrival_age_s)"/>
+    <param name="use_focus_crop" value="$(arg vlm_use_focus_crop)"/>
+    <param name="focus_crop_margin_ratio" value="$(arg vlm_focus_crop_margin_ratio)"/>
+    <param name="max_image_side_px" value="$(arg vlm_max_image_side_px)"/>
+    <param name="jpeg_quality" value="$(arg vlm_jpeg_quality)"/>
+  </node>
+
+  <node if="$(arg enable_camera_overlay_viewer)"
+        pkg="xai_driving_explainer"
+        type="driving_camera_overlay_viewer.py"
+        name="driving_camera_overlay_viewer"
+        output="screen">
+    <param name="image_topic" value="$(arg camera_image_topic)"/>
+    <param name="explanation_topic" value="$(arg output_topic)"/>
+    <param name="vlm_topic" value="$(arg vlm_explanation_output_topic)"/>
+    <param name="output_topic" value="$(arg camera_overlay_output_topic)"/>
+    <param name="display_window" value="$(arg camera_display_window)"/>
+    <param name="vlm_image_match_tolerance_s" value="$(arg vlm_image_match_tolerance_s)"/>
+  </node>
+</launch>
