@@ -123,7 +123,7 @@ def parse_args():
         help="sequential 모드에서 시작할 샘플 인덱스",
     )
     parser.add_argument("--max-sync-dt-s", type=float, default=0.12)
-    parser.add_argument("--max-cloud-points", type=int, default=4500)
+    parser.add_argument("--max-cloud-points", type=int, default=9000)
     parser.add_argument("--forward-m", type=float, default=12.0)
     parser.add_argument("--rear-m", type=float, default=2.0)
     parser.add_argument("--half-width-m", type=float, default=8.0)
@@ -557,13 +557,14 @@ def render_projection(sample, camera_info, state, args):
             continue
         horizontal_angle_rad = math.atan2(camera_x, camera_z)
         vertical_angle_rad = math.atan2(camera_y, camera_z)
-        if (
-            horizontal_angle_rad < left_limit_rad
-            or horizontal_angle_rad > right_limit_rad
-            or vertical_angle_rad < top_limit_rad
-            or vertical_angle_rad > bottom_limit_rad
-        ):
-            continue
+        if state.get("use_camera_frustum_filter", True):
+            if (
+                horizontal_angle_rad < left_limit_rad
+                or horizontal_angle_rad > right_limit_rad
+                or vertical_angle_rad < top_limit_rad
+                or vertical_angle_rad > bottom_limit_rad
+            ):
+                continue
 
         if use_undistorted_display:
             u = (fx * (camera_x / camera_z)) + cx
@@ -667,11 +668,12 @@ def render_projection(sample, camera_info, state, args):
             0 if charuco_observation is None else int(charuco_observation["charuco_count"]),
             int(highlighted_board_count),
         ),
-        "display = {} | frustum-filter = {:.1f}deg margin".format(
+        "display = {} | frustum-filter = {} ({:.1f}deg margin)".format(
             "undistorted" if use_undistorted_display else "raw",
+            "on" if state.get("use_camera_frustum_filter", True) else "off",
             float(args.camera_frustum_margin_deg),
         ),
-        "step t={:.3f}m r={:.2f}deg | n/p sample | s save | q quit".format(
+        "step t={:.3f}m r={:.2f}deg | n/p sample | f frustum on/off | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
         ),
         "1/2:x-+ 3/4:y-+ 5/6:z-+  u/o:roll-+  i/k:pitch-+  j/l:yaw-+  [-] step down  [=] step up",
@@ -770,6 +772,7 @@ def main():
         "yaw_deg": math.degrees(init_yaw),
         "translation_step_m": 0.01,
         "rotation_step_deg": 1.0,
+        "use_camera_frustum_filter": True,
     }
 
     window_name = "camera_lidar_extrinsic_tuner"
@@ -798,6 +801,9 @@ def main():
             continue
         if key == ord("p"):
             state["sample_index"] = (state["sample_index"] - 1) % state["sample_count"]
+            continue
+        if key == ord("f"):
+            state["use_camera_frustum_filter"] = not state["use_camera_frustum_filter"]
             continue
 
         if key == ord("1"):
