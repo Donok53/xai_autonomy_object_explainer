@@ -84,6 +84,12 @@ class DrivingCameraOverlayViewer:
         self.window_name = str(
             rospy.get_param("~window_name", "xai_driving_camera_view")
         )
+        self.show_detector_boxes = bool(
+            rospy.get_param("~show_detector_boxes", False)
+        )
+        self.show_pointcloud_bbox = bool(
+            rospy.get_param("~show_pointcloud_bbox", False)
+        )
         self.font_scale = float(rospy.get_param("~font_scale", 0.55))
         self.line_height = int(rospy.get_param("~line_height", 22))
         self.font_path = str(
@@ -251,6 +257,8 @@ class DrivingCameraOverlayViewer:
         return best
 
     def _draw_detector_boxes(self, image_bgr, payload):
+        if not self.show_detector_boxes:
+            return image_bgr
         detections = (
             (payload or {})
             .get("detector_details", {})
@@ -321,7 +329,7 @@ class DrivingCameraOverlayViewer:
                 lineType=cv2.LINE_AA,
             )
 
-        if len(bbox) == 4:
+        if self.show_pointcloud_bbox and len(bbox) == 4:
             x0, y0, x1, y1 = [int(value) for value in bbox]
             cv2.rectangle(annotated, (x0, y0), (x1, y1), (255, 120, 0), 2)
             label = "LiDAR {}pts".format(int(pointcloud_visual.get("point_count") or 0))

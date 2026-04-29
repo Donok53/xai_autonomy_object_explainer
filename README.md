@@ -102,7 +102,7 @@ roslaunch xai_driving_explainer xai_driving_explainer.launch
   이름은 legacy이지만, 기본 설정에서는 detector 결과 payload를 담는다
 - `/xai/driving_camera_overlay`
   카메라 프레임 위에 실제 YOLO detection bbox와 설명을 얹은 annotated image
-  그리고 point cloud projection이 가능할 때는 LiDAR cluster 점과 bbox도 함께 표시
+  기본값은 projected point cloud만 표시하고, detector bbox는 내부 판단에만 사용
 
 ## Bag 으로 직접 돌려보기
 
