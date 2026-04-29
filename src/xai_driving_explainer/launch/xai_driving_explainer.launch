@@ -60,7 +60,7 @@
   <arg name="scene_detector_jpeg_quality" default="80"/>
   <arg name="scene_detector_yolo_request_timeout_s" default="3.0"/>
   <arg name="scene_detector_yolo_model" default="yolo11n.pt"/>
-  <arg name="scene_detector_yolo_confidence_threshold" default="0.50"/>
+  <arg name="scene_detector_yolo_confidence_threshold" default="0.30"/>
   <arg name="scene_detector_yolo_iou_threshold" default="0.45"/>
   <arg name="scene_detector_yolo_max_det" default="8"/>
   <arg name="scene_detector_yolo_imgsz" default="320"/>
