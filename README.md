@@ -25,7 +25,7 @@
   카메라 프레임 위에 `event`, `final`, `objects`만 간단히 overlay
 
 VLM 실험 경로는 남아 있지만, 기본값은 꺼져 있다.
-현재 기본 backend는 `yolo_worker`이며, 실제 camera detector bbox를 overlay에 반영한다.
+현재 기본 backend는 `yolo_worker`이며, detector는 내부 판단용으로 사용한다.
 또한 기본적으로 tracker를 켜서, 같은 물체가 몇 프레임 동안 라벨이 흔들리더라도
 동일 객체로 최대한 유지하도록 설계했다.
 추가로 `/cmd_vel`과 odometry를 함께 읽어, 로봇이 움직이는 동안에는
@@ -101,8 +101,8 @@ roslaunch xai_driving_explainer xai_driving_explainer.launch
 - `/xai/driving_vlm_explanations`
   이름은 legacy이지만, 기본 설정에서는 detector 결과 payload를 담는다
 - `/xai/driving_camera_overlay`
-  카메라 프레임 위에 실제 YOLO detection bbox와 설명을 얹은 annotated image
-  기본값은 projected point cloud만 표시하고, detector bbox는 내부 판단에만 사용
+  기본값은 검은 배경의 `lidar_only` 화면 위에 projected point cloud와 설명만 표시한다
+  detector bbox는 내부 판단에만 사용한다
 
 ## Bag 으로 직접 돌려보기
 

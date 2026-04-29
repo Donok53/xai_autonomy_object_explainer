@@ -82,8 +82,11 @@ class DrivingCameraOverlayViewer:
         )
         self.display_window = bool(rospy.get_param("~display_window", True))
         self.window_name = str(
-            rospy.get_param("~window_name", "xai_driving_camera_view")
+            rospy.get_param("~window_name", "xai_driving_lidar_view")
         )
+        self.render_mode = str(
+            rospy.get_param("~render_mode", "lidar_only")
+        ).strip().lower()
         self.show_detector_boxes = bool(
             rospy.get_param("~show_detector_boxes", False)
         )
@@ -359,7 +362,12 @@ class DrivingCameraOverlayViewer:
         if selected_id_parts:
             selected_id_text = " / ".join(selected_id_parts)
 
-        annotated = self._draw_overlay_panel(image_bgr.copy())
+        if self.render_mode == "camera":
+            base_image = image_bgr.copy()
+        else:
+            base_image = np.zeros_like(image_bgr)
+
+        annotated = self._draw_overlay_panel(base_image)
         annotated = self._draw_pointcloud_overlay(annotated, vlm)
         annotated = self._draw_detector_boxes(annotated, vlm)
 
