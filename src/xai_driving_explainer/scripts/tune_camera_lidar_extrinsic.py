@@ -165,6 +165,11 @@ def parse_args():
         default="",
         help="ChArUco intrinsic 보정 결과 YAML 경로",
     )
+    parser.add_argument(
+        "--init-yaml",
+        default="",
+        help="자동/수동 extrinsic YAML을 읽어 초기값으로 사용",
+    )
     parser.add_argument("--undistort-display", action="store_true", default=True)
     parser.add_argument("--no-undistort-display", action="store_true")
     parser.add_argument(
@@ -278,14 +283,7 @@ def load_camera_info_from_yaml(yaml_path):
     if not os.path.exists(path):
         raise RuntimeError("intrinsic yaml 파일이 존재하지 않습니다: {}".format(path))
 
-    values = {}
-    with open(path, "r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or ":" not in line:
-                continue
-            key, raw_value = line.split(":", 1)
-            values[key.strip()] = raw_value.strip()
+    values = load_simple_yaml_map(path)
 
     camera_matrix = list(ast.literal_eval(values["camera_matrix"]))
     distortion = list(
@@ -300,6 +298,38 @@ def load_camera_info_from_yaml(yaml_path):
         "cx": float(camera_matrix[2]),
         "cy": float(camera_matrix[5]),
         "distortion": np.array(distortion, dtype=np.float32),
+    }
+
+
+def load_simple_yaml_map(path):
+    values = {}
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, raw_value = line.split(":", 1)
+            values[key.strip()] = raw_value.strip()
+    return values
+
+
+def load_extrinsic_init_from_yaml(yaml_path):
+    path = os.path.abspath(os.path.expanduser(str(yaml_path)))
+    if not os.path.exists(path):
+        raise RuntimeError("extrinsic yaml 파일이 존재하지 않습니다: {}".format(path))
+    values = load_simple_yaml_map(path)
+    translation = list(ast.literal_eval(values["translation_xyz"]))
+    quaternion = list(ast.literal_eval(values["rotation_xyzw"]))
+    if len(translation) != 3 or len(quaternion) != 4:
+        raise RuntimeError("extrinsic yaml 형식이 올바르지 않습니다: {}".format(path))
+    return {
+        "tx": float(translation[0]),
+        "ty": float(translation[1]),
+        "tz": float(translation[2]),
+        "qx": float(quaternion[0]),
+        "qy": float(quaternion[1]),
+        "qz": float(quaternion[2]),
+        "qw": float(quaternion[3]),
     }
 
 
@@ -1000,6 +1030,15 @@ def main():
     args = parse_args()
     if args.no_undistort_display:
         args.undistort_display = False
+    if args.init_yaml:
+        init_values = load_extrinsic_init_from_yaml(args.init_yaml)
+        args.tx = init_values["tx"]
+        args.ty = init_values["ty"]
+        args.tz = init_values["tz"]
+        args.qx = init_values["qx"]
+        args.qy = init_values["qy"]
+        args.qz = init_values["qz"]
+        args.qw = init_values["qw"]
     camera_info, samples = load_samples(args)
 
     init_quaternion = (args.qx, args.qy, args.qz, args.qw)
