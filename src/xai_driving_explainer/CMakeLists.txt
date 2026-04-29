@@ -16,6 +16,7 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/build_bag_event_index.py
+  scripts/auto_calibrate_camera_lidar_charuco.py
   scripts/driving_camera_overlay_viewer.py
   scripts/driving_scene_detector_node.py
   scripts/driving_vlm_inference_node.py

@@ -186,6 +186,31 @@ launch 터미널에서 기대하는 로그:
 설계도면이나 정적 TF가 없을 때는, bag를 보면서 카메라 위에 point cloud를 직접 투영해
 `tx/ty/tz/roll/pitch/yaw`를 수동으로 맞추는 편이 가장 현실적이다.
 
+체커보드/ChArUco bag가 준비되어 있다면, 먼저 자동 추정으로 초기 extrinsic을 구해본 뒤
+필요할 때만 수동 튜너로 미세조정하는 흐름을 권장한다.
+
+자동 추정 실행:
+
+```bash
+cd ~/code/xai_autonomy_driving_explainer
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+/usr/bin/python3 src/xai_driving_explainer/scripts/auto_calibrate_camera_lidar_charuco.py \
+  --bag /home/byeongjae/bagfiles/yongbong_checkerboard_v2.bag \
+  --point-cloud-topic /ouster/points
+```
+
+기본값은 현재 작업에 맞춰 아래처럼 잡혀 있다.
+
+- ChArUco `6 x 8`
+- Checker size `25 mm`
+- Marker size `18.75 mm`
+- Dictionary `DICT_4X4_50`
+
+자동 추정은 camera에서 ChArUco pose를 찾고, 현재 초기 extrinsic을 바탕으로
+보드 근처 점군을 자동 선택한 뒤 plane 기반으로 refinement한다.
+완벽하지 않을 수 있으므로, 결과 YAML을 얻은 뒤 필요하면 아래 수동 튜너로 마무리하면 된다.
+
 튜너 실행:
 
 ```bash
