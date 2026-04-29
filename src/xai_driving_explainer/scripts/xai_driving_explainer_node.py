@@ -56,6 +56,15 @@ def describe_vertical_band_ko(band):
     return mapping.get(band, "높이 불명확")
 
 
+def safe_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 class DrivingExplainerNode:
     def __init__(self):
         self.planner_snapshot_topic = rospy.get_param(
@@ -120,8 +129,23 @@ class DrivingExplainerNode:
         self.latest_event = self._parse_json(message)
         self._publish_bundle(trigger="event_log")
 
+    def _current_state_payload(self):
+        snapshot = self.latest_snapshot or {}
+        event = self.latest_event or {}
+        if not snapshot:
+            return event
+        merged = dict(snapshot)
+        if event.get("event_label") is not None:
+            merged["event_label"] = event.get("event_label")
+        if event.get("event_type") is not None:
+            merged["event_type"] = event.get("event_type")
+        if event.get("signature") is not None:
+            merged["signature"] = event.get("signature")
+        return merged
+
     def _compose_planner_reason(self):
-        payload = self.latest_event or self.latest_snapshot or {}
+        payload = self._current_state_payload()
+        goal_arrival = self._extract_goal_arrival_state(payload)
         decision = payload.get("decision", {})
         behavior_reason = nested_get(decision, "behavior", "reason")
         emergency_stop = nested_get(decision, "emergency_stop", "value")
@@ -129,6 +153,8 @@ class DrivingExplainerNode:
         caution = nested_get(decision, "global_obstacle_caution", "value")
         speed_limit = nested_get(decision, "behavior", "speed_limit_mps")
 
+        if goal_arrival.get("at_goal"):
+            return "로봇은 목적지 부근에 도착해 정지 상태를 유지하고 있다."
         if emergency_stop:
             return "로봇은 현재 비상정지 상태이며, 전방 근거리 장애물 또는 정지 근거를 우선적으로 반영하고 있다."
         if path_blocked:
@@ -148,8 +174,99 @@ class DrivingExplainerNode:
     def _compose_summary(self):
         return self._compose_planner_reason()
 
+    def _extract_goal_arrival_state(self, payload):
+        payload = payload or {}
+        decision = payload.get("decision", {})
+        planning = payload.get("planning", {})
+        control = payload.get("control", {})
+        robot = payload.get("robot", {})
+
+        behavior_reason = str(
+            nested_get(decision, "behavior", "reason", default="") or ""
+        ).strip().lower()
+        behavior_stop = bool(nested_get(decision, "behavior", "stop", default=False))
+        emergency_stop = bool(
+            nested_get(decision, "emergency_stop", "value", default=False)
+        )
+        path_blocked = bool(
+            nested_get(decision, "path_blocked", "value", default=False)
+        )
+        caution = bool(
+            nested_get(decision, "global_obstacle_caution", "value", default=False)
+        )
+
+        remaining_path_length_m = safe_float(
+            nested_get(planning, "tracking_reference", "length_m", default=None),
+            default=None,
+        )
+        if remaining_path_length_m is None:
+            remaining_path_length_m = safe_float(
+                nested_get(planning, "global_path", "length_m", default=None),
+                default=None,
+            )
+        remaining_path_points = nested_get(
+            planning, "tracking_reference", "points", default=None
+        )
+        if remaining_path_points is None:
+            remaining_path_points = nested_get(
+                planning, "global_path", "points", default=None
+            )
+
+        robot_speed_mps = safe_float(robot.get("speed_mps"), default=None)
+        cmd_linear_x_mps = safe_float(control.get("linear_x_mps"), default=None)
+        motion_state = str(control.get("motion_state") or "").strip().lower()
+
+        stopped = False
+        if motion_state == "stopped":
+            stopped = True
+        elif robot_speed_mps is not None and robot_speed_mps <= 0.05:
+            stopped = True
+        elif cmd_linear_x_mps is not None and abs(cmd_linear_x_mps) <= 0.03:
+            stopped = True
+
+        short_remaining_path = False
+        if remaining_path_length_m is not None and remaining_path_length_m <= 0.35:
+            short_remaining_path = True
+        elif (
+            remaining_path_length_m is not None
+            and remaining_path_length_m <= 0.45
+            and remaining_path_points is not None
+            and int(remaining_path_points) <= 2
+        ):
+            short_remaining_path = True
+
+        explicit_goal_reason = behavior_reason in {
+            "goal_reached",
+            "arrived",
+            "at_goal",
+            "goal",
+            "done",
+        }
+
+        at_goal = bool(
+            (explicit_goal_reason or short_remaining_path)
+            and stopped
+            and not emergency_stop
+            and not path_blocked
+            and not caution
+            and not behavior_stop
+        )
+
+        return {
+            "available": True,
+            "at_goal": at_goal,
+            "explicit_goal_reason": explicit_goal_reason,
+            "stopped": stopped,
+            "remaining_path_length_m": remaining_path_length_m,
+            "remaining_path_points": remaining_path_points,
+            "robot_speed_mps": robot_speed_mps,
+            "cmd_linear_x_mps": cmd_linear_x_mps,
+            "motion_state": motion_state,
+            "behavior_reason": behavior_reason,
+        }
+
     def _compose_evidence(self):
-        payload = self.latest_snapshot or self.latest_event or {}
+        payload = self._current_state_payload()
         obstacle = payload.get("obstacle_evidence", {})
         planning = payload.get("planning", {})
         control = payload.get("control", {})
@@ -218,7 +335,7 @@ class DrivingExplainerNode:
         return evidence
 
     def _extract_visual_grounding_hint(self):
-        payload = self.latest_snapshot or self.latest_event or {}
+        payload = self._current_state_payload()
         obstacle = payload.get("obstacle_evidence", {})
 
         near_stop = obstacle.get("near_field_stop_hits", {})
@@ -289,6 +406,13 @@ class DrivingExplainerNode:
         }
 
     def _compose_final_explanation(self, planner_reason, grounding_hint):
+        payload = self._current_state_payload()
+        goal_arrival = self._extract_goal_arrival_state(payload)
+        if goal_arrival.get("at_goal"):
+            return (
+                "로봇은 목적지에 도착해 정지한 상태다. "
+                "현재 정지는 장애물 회피보다는 목표 지점 도착의 결과로 해석하는 편이 적절하다."
+            )
         if grounding_hint.get("available"):
             return "{} 카메라에서는 우선 '{}' 영역을 확인해 scene narration을 보강하는 방식이 적절하다.".format(
                 planner_reason,
@@ -299,6 +423,10 @@ class DrivingExplainerNode:
         )
 
     def _compose_camera_scene_hint(self, grounding_hint):
+        payload = self._current_state_payload()
+        goal_arrival = self._extract_goal_arrival_state(payload)
+        if goal_arrival.get("at_goal"):
+            return "카메라에서는 현재 정지 지점 주변 장면을 보조적으로 설명하되, 이를 추가 회피 판단으로 과해석하지 않는다."
         if grounding_hint.get("available"):
             return "카메라에서는 '{}' 영역의 장애물 배치와 통로 상태를 우선 확인한다.".format(
                 grounding_hint.get("matched_visual_region_ko")
@@ -350,6 +478,7 @@ class DrivingExplainerNode:
     def _compose_bundle(self, trigger):
         event = self.latest_event or {}
         snapshot = self.latest_snapshot or {}
+        state_payload = self._current_state_payload()
         source_stamp = event.get("stamp") or snapshot.get("stamp")
         replay_stamp = rospy.Time.now().to_sec()
         stamp = source_stamp or replay_stamp
@@ -371,8 +500,9 @@ class DrivingExplainerNode:
             "camera_do_not_claim_ko": "카메라는 단일 프레임만으로 planner가 회피한 정확한 동일 객체를 단정하지 않는다.",
             "camera_scene_hint_ko": camera_scene_hint,
             "visual_grounding_hint": grounding_hint,
+            "goal_arrival_state": self._extract_goal_arrival_state(state_payload),
             "final_explanation_ko": final_explanation,
-            "decision": (event or snapshot).get("decision", {}),
+            "decision": state_payload.get("decision", {}),
             "signature": event.get("signature", {}),
             "evidence": self._compose_evidence(),
             "faithfulness_policy": {

@@ -25,9 +25,9 @@
   <arg name="camera_render_mode" default="lidar_only"/>
   <arg name="camera_show_detector_boxes" default="false"/>
   <arg name="camera_show_pointcloud_bbox" default="false"/>
-  <arg name="camera_lidar_bev_max_forward_m" default="8.0"/>
-  <arg name="camera_lidar_bev_rear_m" default="1.5"/>
-  <arg name="camera_lidar_bev_half_width_m" default="5.0"/>
+  <arg name="camera_lidar_bev_max_forward_m" default="20.0"/>
+  <arg name="camera_lidar_bev_rear_m" default="20.0"/>
+  <arg name="camera_lidar_bev_half_width_m" default="20.0"/>
   <arg name="camera_lidar_bev_max_height_abs_m" default="2.0"/>
   <arg name="camera_lidar_bev_max_points" default="4000"/>
   <arg name="camera_lidar_canvas_width_px" default="1280"/>

@@ -178,6 +178,13 @@ def clamp(value, lower, upper):
     return max(lower, min(upper, value))
 
 
+def goal_arrival_state_from_bundle(bundle):
+    state = (bundle or {}).get("goal_arrival_state", {})
+    if not isinstance(state, dict):
+        return {}
+    return state
+
+
 def yaw_from_quaternion(quaternion):
     x = float(getattr(quaternion, "x", 0.0) or 0.0)
     y = float(getattr(quaternion, "y", 0.0) or 0.0)
@@ -1829,6 +1836,7 @@ class DrivingSceneDetectorNode:
             )
         )
         event_label = bundle.get("event_label")
+        goal_arrival = goal_arrival_state_from_bundle(bundle)
         object_summaries = self._summarize_detected_objects(detections)
         if object_summaries:
             joined = ", ".join(object_summaries)
@@ -1843,6 +1851,10 @@ class DrivingSceneDetectorNode:
                 region,
                 label_ko,
                 self._semantic_memory_unit(label_ko),
+            )
+        if goal_arrival.get("at_goal"):
+            return "{} 영역에서 목적지 도착 후 정지 상태로 보이며 뚜렷한 장애물 후보는 없다.".format(
+                region
             )
         if event_label == "path_blocked":
             return "{} 영역에서 카메라로 뚜렷한 형태를 분리하진 못했지만 장애물 후보가 있는 것으로 보인다.".format(
@@ -1875,6 +1887,7 @@ class DrivingSceneDetectorNode:
         )
         distance_phrase = format_distance(distance_hint_m)
         event_label = bundle.get("event_label")
+        goal_arrival = goal_arrival_state_from_bundle(bundle)
         selected_label = None
         if selected_detection:
             selected_label = selected_detection.get("label_ko") or english_label_to_korean(
@@ -1887,6 +1900,23 @@ class DrivingSceneDetectorNode:
         if not object_phrase and semantic_memory_fallback and semantic_memory_fallback.get("label_ko"):
             label_ko = semantic_memory_fallback.get("label_ko")
             object_phrase = "{} 1{}".format(label_ko, self._semantic_memory_unit(label_ko))
+
+        if goal_arrival.get("at_goal"):
+            if selected_label:
+                return "{} {}부근에 {}{} 보이지만, 로봇은 목적지에 도착해 정지한 상태다.".format(
+                    region,
+                    distance_phrase,
+                    selected_label,
+                    choose_subject_particle(selected_label),
+                ).replace("  ", " ")
+            if object_phrase:
+                return "{} {}부근에 {}{} 보이지만, 로봇은 목적지에 도착해 정지한 상태다.".format(
+                    region,
+                    distance_phrase,
+                    object_phrase,
+                    choose_subject_particle(object_phrase),
+                ).replace("  ", " ")
+            return "로봇은 목적지에 도착해 정지한 상태이며, 현재 정지를 장애물 회피로 해석할 근거는 크지 않다."
 
         if event_label == "path_blocked":
             if selected_label:

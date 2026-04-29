@@ -112,13 +112,13 @@ class DrivingCameraOverlayViewer:
         )
         self.vlm_buffer_size = int(rospy.get_param("~vlm_buffer_size", 40))
         self.lidar_bev_max_forward_m = float(
-            rospy.get_param("~lidar_bev_max_forward_m", 8.0)
+            rospy.get_param("~lidar_bev_max_forward_m", 20.0)
         )
         self.lidar_bev_rear_m = float(
-            rospy.get_param("~lidar_bev_rear_m", 1.5)
+            rospy.get_param("~lidar_bev_rear_m", 20.0)
         )
         self.lidar_bev_half_width_m = float(
-            rospy.get_param("~lidar_bev_half_width_m", 5.0)
+            rospy.get_param("~lidar_bev_half_width_m", 20.0)
         )
         self.lidar_bev_point_radius_px = int(
             rospy.get_param("~lidar_bev_point_radius_px", 2)
@@ -470,8 +470,13 @@ class DrivingCameraOverlayViewer:
 
         overlay = annotated.copy()
         grid_color = (35, 35, 35)
-        for forward_m in (0.0, 1.0, 2.0, 4.0, 6.0, 8.0):
-            if forward_m > max_forward_m:
+        grid_step_m = 5.0
+        grid_start_m = -float(max_rear_m)
+        grid_end_m = float(max_forward_m)
+        forward_m = grid_start_m
+        while forward_m <= (grid_end_m + 1e-6):
+            if forward_m < (-max_rear_m) or forward_m > max_forward_m:
+                forward_m += grid_step_m
                 continue
             _, py = world_to_canvas((forward_m, 0.0, 0.0))
             cv2.line(
@@ -482,6 +487,7 @@ class DrivingCameraOverlayViewer:
                 1,
                 cv2.LINE_AA,
             )
+            forward_m += grid_step_m
         cv2.line(
             overlay,
             (canvas_w // 2, top_margin),
@@ -502,7 +508,7 @@ class DrivingCameraOverlayViewer:
                 annotated,
                 (px, py),
                 max(1, point_radius_px - 1),
-                (80, 80, 80),
+                (235, 206, 135),
                 -1,
                 lineType=cv2.LINE_AA,
             )
@@ -517,7 +523,7 @@ class DrivingCameraOverlayViewer:
                 annotated,
                 (px, py),
                 point_radius_px,
-                (0, 255, 255),
+                (0, 0, 255),
                 -1,
                 lineType=cv2.LINE_AA,
             )
@@ -549,7 +555,7 @@ class DrivingCameraOverlayViewer:
                 annotated,
                 (anchor_px, anchor_py),
                 max(3, point_radius_px + 2),
-                (0, 180, 255),
+                (0, 0, 255),
                 2,
                 lineType=cv2.LINE_AA,
             )
@@ -557,7 +563,7 @@ class DrivingCameraOverlayViewer:
                 annotated,
                 id_text,
                 (anchor_px + 10, max(top_margin + 10, anchor_py - 10)),
-                (0, 220, 255),
+                (0, 80, 255),
                 self.text_font,
                 max_width_px=max(120, canvas_w - anchor_px - 20),
                 line_height=self.line_height,
@@ -587,7 +593,7 @@ class DrivingCameraOverlayViewer:
             annotated,
             info_text,
             (20, max(190, canvas_h - 26)),
-            (180, 220, 255),
+            (235, 206, 135),
             self.text_font,
             max_width_px=canvas_w - 40,
             line_height=self.line_height,
