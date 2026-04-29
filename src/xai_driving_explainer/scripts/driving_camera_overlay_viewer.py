@@ -95,10 +95,10 @@ class DrivingCameraOverlayViewer:
             rospy.get_param("~lidar_render_style", "perspective_3d")
         ).strip().lower()
         self.show_detector_boxes = bool(
-            rospy.get_param("~show_detector_boxes", False)
+            rospy.get_param("~show_detector_boxes", True)
         )
         self.show_pointcloud_bbox = bool(
-            rospy.get_param("~show_pointcloud_bbox", True)
+            rospy.get_param("~show_pointcloud_bbox", False)
         )
         self.font_scale = float(rospy.get_param("~font_scale", 0.55))
         self.line_height = int(rospy.get_param("~line_height", 22))
@@ -898,8 +898,9 @@ class DrivingCameraOverlayViewer:
             base_image = np.zeros_like(image_bgr)
 
         annotated = self._draw_overlay_panel(base_image)
-        if self.render_mode == "camera":
-            annotated = self._draw_pointcloud_overlay(annotated, vlm)
+        if self.render_mode in ("camera", "side_by_side"):
+            if self.show_pointcloud_bbox:
+                annotated = self._draw_pointcloud_overlay(annotated, vlm)
         else:
             if self.lidar_render_style == "bev":
                 annotated = self._draw_lidar_bev(
