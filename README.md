@@ -192,14 +192,14 @@ launch 터미널에서 기대하는 로그:
 cd ~/code/xai_autonomy_driving_explainer
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
-python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+/usr/bin/python3 src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
   --bag /home/byeongjae/bagfiles/record_real_20260422_180049.bag
 ```
 
 `camera_info`가 없는 bag라면 다른 bag에서 intrinsic만 읽어와서 같이 쓸 수 있다.
 
 ```bash
-python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+/usr/bin/python3 src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
   --bag /home/byeongjae/bagfiles/yongbong_checkerboard.bag \
   --point-cloud-topic /ouster/points \
   --camera-info-bag /home/byeongjae/bagfiles/record_real_20260422_180049.bag
@@ -208,7 +208,7 @@ python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
 또는 camera intrinsic을 직접 알고 있다면 수동 입력도 가능하다.
 
 ```bash
-python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+/usr/bin/python3 src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
   --bag /home/byeongjae/bagfiles/yongbong_checkerboard.bag \
   --point-cloud-topic /ouster/points \
   --camera-frame camera_color_optical_frame \

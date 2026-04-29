@@ -1,12 +1,23 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 import argparse
 import math
 import os
+import sys
 
-import cv2
 import rosbag
 import sensor_msgs.point_cloud2 as point_cloud2
-from cv_bridge import CvBridge
+
+try:
+    import cv2
+    from cv_bridge import CvBridge
+except ImportError as exc:
+    raise SystemExit(
+        "필수 모듈을 불러오지 못했습니다: {}.\n"
+        "이 스크립트는 ROS OpenCV가 설치된 시스템 Python으로 실행해야 합니다.\n"
+        "다음처럼 다시 실행해 주세요:\n"
+        "  /usr/bin/python3 src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py ...\n"
+        "현재 interpreter: {}".format(exc, sys.executable)
+    )
 
 
 def clamp(value, lower, upper):
