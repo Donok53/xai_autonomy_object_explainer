@@ -89,14 +89,27 @@ def normalize_region_phrase(region_text):
 
 COMMON_LABEL_KO = {
     "person": "사람",
+    "bicycle": "자전거",
+    "car": "자동차",
+    "motorcycle": "오토바이",
+    "train": "기차",
+    "truck": "트럭",
+    "traffic light": "신호등",
+    "fire hydrant": "소화전",
+    "stop sign": "정지 표지판",
+    "parking meter": "주차 미터기",
     "umbrella": "우산",
+    "cat": "고양이",
+    "dog": "개",
     "chair": "의자",
     "bench": "벤치",
     "bottle": "병",
     "cup": "컵",
+    "wine glass": "와인잔",
     "backpack": "가방",
     "handbag": "가방",
     "suitcase": "캐리어",
+    "sports ball": "공",
     "potted plant": "화분",
     "vase": "화병",
     "book": "책",
@@ -117,13 +130,48 @@ COMMON_LABEL_KO = {
     "truck": "트럭",
     "car": "자동차",
     "bus": "버스",
-    "bicycle": "자전거",
-    "motorcycle": "오토바이",
+    "wall": "벽",
 }
 
 
+ALLOWED_DETECTOR_LABELS = {
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "train",
+    "truck",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "cat",
+    "dog",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "suitcase",
+    "sports ball",
+    "bottle",
+    "cup",
+    "wine glass",
+    "book",
+    "clock",
+}
+
+
+def normalize_detector_label(label):
+    normalized = str(label or "").strip().lower()
+    if not normalized:
+        return "wall"
+    if normalized in ALLOWED_DETECTOR_LABELS:
+        return normalized
+    return "wall"
+
+
 def english_label_to_korean(label):
-    label = str(label or "").strip().lower()
+    label = normalize_detector_label(label)
     if not label:
         return "장애물"
     return COMMON_LABEL_KO.get(label, label)
@@ -1416,6 +1464,7 @@ class DrivingSceneDetectorNode:
         full_x1 = max(0, min(prepared_meta["full_w"] - 1, full_x1))
         full_y1 = max(0, min(prepared_meta["full_h"] - 1, full_y1))
         mapped = dict(detection)
+        mapped["label"] = normalize_detector_label(mapped.get("label"))
         mapped["bbox_xyxy_full"] = [full_x0, full_y0, full_x1, full_y1]
         mapped["label_ko"] = english_label_to_korean(mapped.get("label"))
         return mapped
