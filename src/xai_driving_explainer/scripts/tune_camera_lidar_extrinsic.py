@@ -110,6 +110,18 @@ def parse_args():
     )
     parser.add_argument("--max-samples", type=int, default=10)
     parser.add_argument("--image-stride", type=int, default=5)
+    parser.add_argument(
+        "--sample-selection",
+        choices=("charuco_priority", "sequential"),
+        default="charuco_priority",
+        help="튜너에서 샘플을 고르는 방식",
+    )
+    parser.add_argument(
+        "--sample-start-index",
+        type=int,
+        default=0,
+        help="sequential 모드에서 시작할 샘플 인덱스",
+    )
     parser.add_argument("--max-sync-dt-s", type=float, default=0.12)
     parser.add_argument("--max-cloud-points", type=int, default=4500)
     parser.add_argument("--forward-m", type=float, default=12.0)
@@ -434,18 +446,25 @@ def load_samples(args):
         )
     if not samples:
         raise RuntimeError("동기화된 image/point_cloud 샘플을 만들지 못했습니다.")
-    prioritized = [sample for sample in samples if sample.get("charuco_observation") is not None]
-    if prioritized:
-        prioritized.sort(
-            key=lambda sample: (
-                int(sample["charuco_observation"]["charuco_count"]),
-                int(sample["charuco_observation"]["marker_count"]),
-            ),
-            reverse=True,
-        )
-        samples = prioritized[: max(1, int(args.max_samples))]
+    max_samples = max(1, int(args.max_samples))
+    if str(args.sample_selection) == "sequential":
+        start_index = max(0, int(args.sample_start_index))
+        samples = samples[start_index : start_index + max_samples]
     else:
-        samples = samples[: max(1, int(args.max_samples))]
+        prioritized = [sample for sample in samples if sample.get("charuco_observation") is not None]
+        if prioritized:
+            prioritized.sort(
+                key=lambda sample: (
+                    int(sample["charuco_observation"]["charuco_count"]),
+                    int(sample["charuco_observation"]["marker_count"]),
+                ),
+                reverse=True,
+            )
+            samples = prioritized[:max_samples]
+        else:
+            samples = samples[:max_samples]
+    if not samples:
+        raise RuntimeError("선택 조건에 맞는 샘플이 없습니다.")
     return camera_info, samples
 
 
