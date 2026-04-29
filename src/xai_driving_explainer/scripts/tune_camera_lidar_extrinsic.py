@@ -129,7 +129,7 @@ def parse_args():
     parser.add_argument("--half-width-m", type=float, default=8.0)
     parser.add_argument("--height-abs-m", type=float, default=2.5)
     parser.add_argument("--max-range-m", type=float, default=12.0)
-    parser.add_argument("--point-radius-px", type=int, default=3)
+    parser.add_argument("--point-radius-px", type=int, default=2)
     parser.add_argument("--overview-width-px", type=int, default=560)
     parser.add_argument(
         "--camera-frustum-margin-deg",
@@ -1014,8 +1014,8 @@ def main():
         "roll_deg": math.degrees(init_roll),
         "pitch_deg": math.degrees(init_pitch),
         "yaw_deg": math.degrees(init_yaw),
-        "translation_step_m": 0.01,
-        "rotation_step_deg": 1.0,
+        "translation_step_m": 0.005,
+        "rotation_step_deg": 0.5,
         "use_camera_frustum_filter": True,
         "reference_projected_points_uv": [],
         "reference_highlighted_points_uv": [],
@@ -1091,8 +1091,8 @@ def main():
         elif key == ord("l"):
             state["yaw_deg"] += state["rotation_step_deg"]
         elif key in (ord("["), ord("-"), ord("_")):
-            state["translation_step_m"] = max(0.001, state["translation_step_m"] * 0.5)
-            state["rotation_step_deg"] = max(0.1, state["rotation_step_deg"] * 0.5)
+            state["translation_step_m"] = max(0.0005, state["translation_step_m"] * 0.5)
+            state["rotation_step_deg"] = max(0.05, state["rotation_step_deg"] * 0.5)
         elif key in (ord("]"), ord("="), ord("+")):
             state["translation_step_m"] = min(0.20, state["translation_step_m"] * 2.0)
             state["rotation_step_deg"] = min(10.0, state["rotation_step_deg"] * 2.0)
