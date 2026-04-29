@@ -965,9 +965,6 @@ class DrivingSceneDetectorNode:
     def _project_point_cloud_visual(self, bundle, image_entry):
         if not self.point_cloud_projection_enabled or image_entry is None:
             return None
-        camera_projection = self._current_camera_projection()
-        if camera_projection is None:
-            return None
 
         point_cloud_entry = self._nearest_point_cloud(
             bundle.get("stamp"),
@@ -984,13 +981,6 @@ class DrivingSceneDetectorNode:
         if anchor_x is None or anchor_y is None:
             return None
 
-        transform = self._lookup_point_cloud_transform(
-            str(point_cloud_entry.get("frame_id") or ""),
-            str(camera_projection.get("frame_id") or ""),
-        )
-        if transform is None:
-            return None
-
         cluster_points = []
         radius = max(0.10, float(self.point_cloud_anchor_radius_m))
         for point_xyz in point_cloud_entry.get("points_xyz") or []:
@@ -1002,6 +992,41 @@ class DrivingSceneDetectorNode:
 
         if not cluster_points:
             return None
+
+        sampled_cluster_points = cluster_points
+        max_points = max(40, int(self.point_cloud_projection_max_points))
+        if len(sampled_cluster_points) > max_points:
+            stride = int(math.ceil(float(len(sampled_cluster_points)) / float(max_points)))
+            sampled_cluster_points = sampled_cluster_points[::stride]
+
+        visual = {
+            "available": True,
+            "cloud_frame_id": point_cloud_entry.get("frame_id"),
+            "anchor_xyz": {
+                "x": float(anchor_x),
+                "y": float(anchor_y),
+                "z": float(anchor_z or 0.0),
+            },
+            "point_count": len(cluster_points),
+            "sampled_point_count": len(sampled_cluster_points),
+            "cluster_points_xyz": [
+                [float(point_xyz[0]), float(point_xyz[1]), float(point_xyz[2])]
+                for point_xyz in sampled_cluster_points
+            ],
+            "distance_hint_m": hint.get("distance_hint_m"),
+            "projected_available": False,
+        }
+
+        camera_projection = self._current_camera_projection()
+        if camera_projection is None:
+            return visual
+
+        transform = self._lookup_point_cloud_transform(
+            str(point_cloud_entry.get("frame_id") or ""),
+            str(camera_projection.get("frame_id") or ""),
+        )
+        if transform is None:
+            return visual
 
         translation_xyz = transform.get("translation_xyz") or (0.0, 0.0, 0.0)
         rotation_xyzw = transform.get("rotation_xyzw") or (0.0, 0.0, 0.0, 1.0)
@@ -1047,10 +1072,9 @@ class DrivingSceneDetectorNode:
             max_v = pixel_v if max_v is None else max(max_v, pixel_v)
 
         if not projected_points:
-            return None
+            return visual
 
         sampled_points = projected_points
-        max_points = max(20, int(self.point_cloud_projection_max_points))
         if len(sampled_points) > max_points:
             stride = int(math.ceil(float(len(sampled_points)) / float(max_points)))
             sampled_points = sampled_points[::stride]
@@ -1061,22 +1085,21 @@ class DrivingSceneDetectorNode:
             int(min(image_width - 1, round(max_u))),
             int(min(image_height - 1, round(max_v))),
         ]
-        return {
-            "available": True,
-            "point_count": len(projected_points),
+        visual.update({
+            "projected_available": True,
+            "projected_point_count": len(projected_points),
             "sampled_point_count": len(sampled_points),
             "projected_points_xy_full": sampled_points,
             "bbox_xyxy_full": bbox_xyxy_full,
             "point_radius_px": int(max(1, self.point_cloud_overlay_point_radius_px)),
             "transform_mode": transform.get("mode"),
-            "cloud_frame_id": point_cloud_entry.get("frame_id"),
             "camera_frame_id": camera_projection.get("frame_id"),
-            "distance_hint_m": hint.get("distance_hint_m"),
             "avg_depth_m": round(
                 sum(projected_depths) / float(len(projected_depths)),
                 3,
             ),
-        }
+        })
+        return visual
 
     def _prepare_image(self, bundle, image_bgr):
         prepared = image_bgr

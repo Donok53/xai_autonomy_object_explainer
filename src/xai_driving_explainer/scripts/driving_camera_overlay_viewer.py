@@ -107,6 +107,15 @@ class DrivingCameraOverlayViewer:
             rospy.get_param("~vlm_image_match_tolerance_s", 0.75)
         )
         self.vlm_buffer_size = int(rospy.get_param("~vlm_buffer_size", 40))
+        self.lidar_bev_max_forward_m = float(
+            rospy.get_param("~lidar_bev_max_forward_m", 3.5)
+        )
+        self.lidar_bev_half_width_m = float(
+            rospy.get_param("~lidar_bev_half_width_m", 2.0)
+        )
+        self.lidar_bev_point_radius_px = int(
+            rospy.get_param("~lidar_bev_point_radius_px", 3)
+        )
 
         self.bridge = CvBridge()
         self.latest_explanation = {}
@@ -347,6 +356,126 @@ class DrivingCameraOverlayViewer:
             )
         return annotated
 
+    def _draw_lidar_bev(self, image_bgr, payload):
+        pointcloud_visual = (
+            (payload or {})
+            .get("detector_details", {})
+            .get("pointcloud_visual", {})
+        )
+        if not isinstance(pointcloud_visual, dict) or not pointcloud_visual.get("available"):
+            return image_bgr
+
+        cluster_points = pointcloud_visual.get("cluster_points_xyz") or []
+        if not cluster_points:
+            return image_bgr
+
+        annotated = image_bgr
+        canvas_h, canvas_w = annotated.shape[:2]
+        top_margin = 185
+        bottom_margin = 28
+        side_margin = 32
+        draw_h = max(40, canvas_h - top_margin - bottom_margin)
+        draw_w = max(40, canvas_w - (2 * side_margin))
+        robot_px = (canvas_w // 2, canvas_h - bottom_margin)
+
+        max_forward_m = max(1.0, float(self.lidar_bev_max_forward_m))
+        half_width_m = max(0.5, float(self.lidar_bev_half_width_m))
+        point_radius_px = max(1, int(self.lidar_bev_point_radius_px))
+
+        def world_to_canvas(point_xyz):
+            forward_x = float(point_xyz[0])
+            lateral_y = float(point_xyz[1])
+            norm_y = lateral_y / half_width_m
+            norm_x = forward_x / max_forward_m
+            px = int(round((canvas_w * 0.5) - (norm_y * (draw_w * 0.5))))
+            py = int(round((canvas_h - bottom_margin) - (norm_x * draw_h)))
+            return px, py
+
+        overlay = annotated.copy()
+        grid_color = (35, 35, 35)
+        for forward_m in (0.5, 1.0, 1.5, 2.0, 3.0):
+            if forward_m >= max_forward_m:
+                continue
+            _, py = world_to_canvas((forward_m, 0.0, 0.0))
+            cv2.line(
+                overlay,
+                (side_margin, py),
+                (canvas_w - side_margin, py),
+                grid_color,
+                1,
+                cv2.LINE_AA,
+            )
+        cv2.line(
+            overlay,
+            (canvas_w // 2, top_margin),
+            (canvas_w // 2, canvas_h - bottom_margin),
+            grid_color,
+            1,
+            cv2.LINE_AA,
+        )
+        annotated = cv2.addWeighted(overlay, 0.45, annotated, 0.55, 0.0)
+
+        for point_xyz in cluster_points:
+            px, py = world_to_canvas(point_xyz)
+            if px < side_margin or px >= (canvas_w - side_margin):
+                continue
+            if py < top_margin or py >= (canvas_h - bottom_margin):
+                continue
+            cv2.circle(
+                annotated,
+                (px, py),
+                point_radius_px,
+                (0, 255, 255),
+                -1,
+                lineType=cv2.LINE_AA,
+            )
+
+        anchor_xyz = pointcloud_visual.get("anchor_xyz") or {}
+        if anchor_xyz:
+            anchor_px, anchor_py = world_to_canvas(
+                (
+                    float(anchor_xyz.get("x") or 0.0),
+                    float(anchor_xyz.get("y") or 0.0),
+                    float(anchor_xyz.get("z") or 0.0),
+                )
+            )
+            cv2.circle(
+                annotated,
+                (anchor_px, anchor_py),
+                max(3, point_radius_px + 2),
+                (0, 180, 255),
+                2,
+                lineType=cv2.LINE_AA,
+            )
+
+        robot_triangle = np.array(
+            [
+                [robot_px[0], robot_px[1] - 16],
+                [robot_px[0] - 10, robot_px[1] + 8],
+                [robot_px[0] + 10, robot_px[1] + 8],
+            ],
+            dtype=np.int32,
+        )
+        cv2.fillConvexPoly(annotated, robot_triangle, (120, 120, 120))
+        cv2.circle(annotated, robot_px, 3, (220, 220, 220), -1, lineType=cv2.LINE_AA)
+
+        info_text = "LiDAR {}pts".format(int(pointcloud_visual.get("point_count") or 0))
+        if pointcloud_visual.get("distance_hint_m") is not None:
+            try:
+                info_text += " | {:.1f}m".format(float(pointcloud_visual.get("distance_hint_m")))
+            except Exception:
+                pass
+        annotated = self._draw_unicode_text(
+            annotated,
+            info_text,
+            (20, max(190, canvas_h - 26)),
+            (180, 220, 255),
+            self.text_font,
+            max_width_px=canvas_w - 40,
+            line_height=self.line_height,
+        )
+        return annotated
+
     def _annotate_image(self, image_bgr, image_stamp=None):
         explanation = self.latest_explanation or {}
         vlm = self._select_vlm_for_image(image_stamp)
@@ -368,7 +497,10 @@ class DrivingCameraOverlayViewer:
             base_image = np.zeros_like(image_bgr)
 
         annotated = self._draw_overlay_panel(base_image)
-        annotated = self._draw_pointcloud_overlay(annotated, vlm)
+        if self.render_mode == "camera":
+            annotated = self._draw_pointcloud_overlay(annotated, vlm)
+        else:
+            annotated = self._draw_lidar_bev(annotated, vlm)
         annotated = self._draw_detector_boxes(annotated, vlm)
 
         lines = [
