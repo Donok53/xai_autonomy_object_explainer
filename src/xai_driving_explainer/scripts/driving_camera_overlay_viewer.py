@@ -138,6 +138,21 @@ class DrivingCameraOverlayViewer:
         self.lidar_canvas_height_px = int(
             rospy.get_param("~lidar_canvas_height_px", 720)
         )
+        self.lidar_perspective_camera_back_factor = float(
+            rospy.get_param("~lidar_perspective_camera_back_factor", 1.10)
+        )
+        self.lidar_perspective_camera_height_factor = float(
+            rospy.get_param("~lidar_perspective_camera_height_factor", 0.85)
+        )
+        self.lidar_perspective_look_at_forward_factor = float(
+            rospy.get_param("~lidar_perspective_look_at_forward_factor", 0.10)
+        )
+        self.lidar_perspective_focal_scale = float(
+            rospy.get_param("~lidar_perspective_focal_scale", 0.48)
+        )
+        self.lidar_perspective_principal_y_ratio = float(
+            rospy.get_param("~lidar_perspective_principal_y_ratio", 0.70)
+        )
 
         self.bridge = CvBridge()
         self.latest_explanation = {}
@@ -636,17 +651,17 @@ class DrivingCameraOverlayViewer:
 
         camera_position = np.array(
             [
-                -0.35 * max_forward_m,
+                -self.lidar_perspective_camera_back_factor * max_forward_m,
                 0.0,
-                max(4.0, 0.35 * half_width_m),
+                max(6.0, self.lidar_perspective_camera_height_factor * half_width_m),
             ],
             dtype=np.float32,
         )
         look_at = np.array(
             [
-                0.35 * max_forward_m,
+                self.lidar_perspective_look_at_forward_factor * max_forward_m,
                 0.0,
-                0.4,
+                0.2,
             ],
             dtype=np.float32,
         )
@@ -667,9 +682,9 @@ class DrivingCameraOverlayViewer:
         if up_norm >= 1e-6:
             up = up / up_norm
 
-        focal_px = 0.82 * min(draw_w, draw_h)
+        focal_px = self.lidar_perspective_focal_scale * min(draw_w, draw_h)
         principal_x = canvas_w * 0.50
-        principal_y = top_margin + (draw_h * 0.64)
+        principal_y = top_margin + (draw_h * self.lidar_perspective_principal_y_ratio)
 
         def project_point(point_xyz):
             point = np.array(
