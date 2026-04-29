@@ -130,6 +130,12 @@ def parse_args():
     parser.add_argument("--height-abs-m", type=float, default=2.5)
     parser.add_argument("--max-range-m", type=float, default=12.0)
     parser.add_argument("--point-radius-px", type=int, default=2)
+    parser.add_argument(
+        "--camera-frustum-margin-deg",
+        type=float,
+        default=3.0,
+        help="카메라 시야각 기반 라이다 필터에 추가할 각도 여유",
+    )
     parser.add_argument("--rows", type=int, default=6)
     parser.add_argument("--columns", type=int, default=8)
     parser.add_argument("--checker-size-mm", type=float, default=25.0)
@@ -484,6 +490,11 @@ def render_projection(sample, camera_info, state, args):
     cx = float(camera_info["cx"])
     cy = float(camera_info["cy"])
     image_h, image_w = image_bgr.shape[:2]
+    frustum_margin_rad = math.radians(float(args.camera_frustum_margin_deg))
+    left_limit_rad = math.atan2(-cx, fx) - frustum_margin_rad
+    right_limit_rad = math.atan2(float(image_w - 1) - cx, fx) + frustum_margin_rad
+    top_limit_rad = math.atan2(-cy, fy) - frustum_margin_rad
+    bottom_limit_rad = math.atan2(float(image_h - 1) - cy, fy) + frustum_margin_rad
 
     roll_rad = math.radians(state["roll_deg"])
     pitch_rad = math.radians(state["pitch_deg"])
@@ -542,6 +553,15 @@ def render_projection(sample, camera_info, state, args):
         camera_y = rotated[1] + translation[1]
         camera_z = rotated[2] + translation[2]
         if camera_z <= 0.10 or camera_z >= args.max_range_m:
+            continue
+        horizontal_angle_rad = math.atan2(camera_x, camera_z)
+        vertical_angle_rad = math.atan2(camera_y, camera_z)
+        if (
+            horizontal_angle_rad < left_limit_rad
+            or horizontal_angle_rad > right_limit_rad
+            or vertical_angle_rad < top_limit_rad
+            or vertical_angle_rad > bottom_limit_rad
+        ):
             continue
 
         if use_undistorted_display:
@@ -646,7 +666,10 @@ def render_projection(sample, camera_info, state, args):
             0 if charuco_observation is None else int(charuco_observation["charuco_count"]),
             int(highlighted_board_count),
         ),
-        "display = {}".format("undistorted" if use_undistorted_display else "raw"),
+        "display = {} | frustum-filter = {:.1f}deg margin".format(
+            "undistorted" if use_undistorted_display else "raw",
+            float(args.camera_frustum_margin_deg),
+        ),
         "step t={:.3f}m r={:.2f}deg | n/p sample | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
         ),
