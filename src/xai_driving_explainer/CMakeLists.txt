@@ -20,6 +20,7 @@ catkin_install_python(PROGRAMS
   scripts/driving_scene_detector_node.py
   scripts/driving_vlm_inference_node.py
   scripts/driving_vlm_prompt_builder.py
+  scripts/tune_camera_lidar_extrinsic.py
   scripts/xai_driving_explainer_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

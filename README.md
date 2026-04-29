@@ -181,6 +181,55 @@ launch 터미널에서 기대하는 로그:
 [XAI-DETECTOR] backend=yolo_worker | event=... | status=ok | scene=... | objects=... | final=...
 ```
 
+## Camera-LiDAR Extrinsic 튜너
+
+설계도면이나 정적 TF가 없을 때는, bag를 보면서 카메라 위에 point cloud를 직접 투영해
+`tx/ty/tz/roll/pitch/yaw`를 수동으로 맞추는 편이 가장 현실적이다.
+
+튜너 실행:
+
+```bash
+cd ~/code/xai_autonomy_driving_explainer
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+python src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+  --bag /home/byeongjae/bagfiles/record_real_20260422_180049.bag
+```
+
+기본 입력:
+
+- image: `/camera/color/image_raw`
+- camera info: `/camera/color/camera_info`
+- point cloud: `/planning/linefit_ground/non_ground_cloud`
+
+주요 조작:
+
+- `1/2`: `tx` 감소/증가
+- `3/4`: `ty` 감소/증가
+- `5/6`: `tz` 감소/증가
+- `u/o`: roll 감소/증가
+- `i/k`: pitch 감소/증가
+- `j/l`: yaw 감소/증가
+- `n/p`: 다음/이전 샘플
+- `[` 또는 `-`: step 축소
+- `]` 또는 `=`: step 확대
+- `s`: YAML 저장 후 종료
+- `q`: 저장 없이 종료
+
+저장 결과에는 아래 값이 같이 들어간다.
+
+- `translation_xyz`
+- `rotation_xyzw`
+- `rotation_rpy_deg`
+- 현재 launch에 바로 붙일 수 있는 override 문자열
+
+튜닝 팁:
+
+- 복도 벽 모서리, 문틀, 바닥-벽 경계처럼 직선이 분명한 구간에서 맞추는 게 좋다.
+- 사람처럼 움직이는 객체보다 우산, 벽, 문, 고정 가구 같은 정적 물체로 맞추는 게 안정적이다.
+- 먼저 yaw와 pitch를 맞추고, 그 다음 `tx/ty/tz`를 세부 조정하는 편이 빠르다.
+- 점군이 전체적으로 좌우로 밀리면 yaw/ty를 먼저 의심하고, 위아래로 뜨면 pitch/tz를 먼저 의심하는 게 좋다.
+
 ## Detector / VLM 전환
 
 기본은 detector-only runtime이다.
