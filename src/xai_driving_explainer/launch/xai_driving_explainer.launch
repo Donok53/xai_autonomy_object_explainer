@@ -25,6 +25,13 @@
   <arg name="camera_render_mode" default="lidar_only"/>
   <arg name="camera_show_detector_boxes" default="false"/>
   <arg name="camera_show_pointcloud_bbox" default="false"/>
+  <arg name="camera_lidar_bev_max_forward_m" default="8.0"/>
+  <arg name="camera_lidar_bev_rear_m" default="1.5"/>
+  <arg name="camera_lidar_bev_half_width_m" default="5.0"/>
+  <arg name="camera_lidar_bev_max_height_abs_m" default="2.0"/>
+  <arg name="camera_lidar_bev_max_points" default="4000"/>
+  <arg name="camera_lidar_canvas_width_px" default="1280"/>
+  <arg name="camera_lidar_canvas_height_px" default="720"/>
   <arg name="vlm_allowed_event_labels" default="path_blocked,path_update"/>
   <arg name="vlm_request_timeout_s" default="20.0"/>
   <arg name="vlm_min_request_interval_s" default="1.5"/>
@@ -222,6 +229,7 @@
         name="driving_camera_overlay_viewer"
         output="screen">
     <param name="image_topic" value="$(arg camera_image_topic)"/>
+    <param name="point_cloud_topic" value="$(arg scene_detector_point_cloud_topic)"/>
     <param name="explanation_topic" value="$(arg output_topic)"/>
     <param name="vlm_topic" value="$(arg vlm_explanation_output_topic)"/>
     <param name="output_topic" value="$(arg camera_overlay_output_topic)"/>
@@ -231,5 +239,12 @@
     <param name="show_pointcloud_bbox" value="$(arg camera_show_pointcloud_bbox)"/>
     <param name="vlm_image_match_tolerance_s" value="$(arg vlm_image_match_tolerance_s)"/>
     <param name="vlm_buffer_size" value="$(arg camera_overlay_vlm_buffer_size)"/>
+    <param name="lidar_bev_max_forward_m" value="$(arg camera_lidar_bev_max_forward_m)"/>
+    <param name="lidar_bev_rear_m" value="$(arg camera_lidar_bev_rear_m)"/>
+    <param name="lidar_bev_half_width_m" value="$(arg camera_lidar_bev_half_width_m)"/>
+    <param name="lidar_bev_max_height_abs_m" value="$(arg camera_lidar_bev_max_height_abs_m)"/>
+    <param name="lidar_bev_max_points" value="$(arg camera_lidar_bev_max_points)"/>
+    <param name="lidar_canvas_width_px" value="$(arg camera_lidar_canvas_width_px)"/>
+    <param name="lidar_canvas_height_px" value="$(arg camera_lidar_canvas_height_px)"/>
   </node>
 </launch>

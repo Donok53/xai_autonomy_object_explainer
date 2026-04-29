@@ -6,10 +6,11 @@ from collections import deque
 import cv2
 import numpy as np
 import rospy
+import sensor_msgs.point_cloud2 as point_cloud2
 from cv_bridge import CvBridge
 from PIL import Image as PilImage
 from PIL import ImageDraw, ImageFont
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, PointCloud2
 from std_msgs.msg import String
 
 
@@ -71,6 +72,9 @@ def wrap_text_with_font(text, draw, font, max_width_px):
 class DrivingCameraOverlayViewer:
     def __init__(self):
         self.image_topic = rospy.get_param("~image_topic", "/camera/color/image_raw")
+        self.point_cloud_topic = rospy.get_param(
+            "~point_cloud_topic", "/planning/linefit_ground/non_ground_cloud"
+        )
         self.explanation_topic = rospy.get_param(
             "~explanation_topic", "/xai/driving_explanations"
         )
@@ -108,19 +112,36 @@ class DrivingCameraOverlayViewer:
         )
         self.vlm_buffer_size = int(rospy.get_param("~vlm_buffer_size", 40))
         self.lidar_bev_max_forward_m = float(
-            rospy.get_param("~lidar_bev_max_forward_m", 3.5)
+            rospy.get_param("~lidar_bev_max_forward_m", 8.0)
+        )
+        self.lidar_bev_rear_m = float(
+            rospy.get_param("~lidar_bev_rear_m", 1.5)
         )
         self.lidar_bev_half_width_m = float(
-            rospy.get_param("~lidar_bev_half_width_m", 2.0)
+            rospy.get_param("~lidar_bev_half_width_m", 5.0)
         )
         self.lidar_bev_point_radius_px = int(
-            rospy.get_param("~lidar_bev_point_radius_px", 3)
+            rospy.get_param("~lidar_bev_point_radius_px", 2)
+        )
+        self.lidar_bev_max_height_abs_m = float(
+            rospy.get_param("~lidar_bev_max_height_abs_m", 2.0)
+        )
+        self.lidar_bev_max_points = int(
+            rospy.get_param("~lidar_bev_max_points", 4000)
+        )
+        self.lidar_canvas_width_px = int(
+            rospy.get_param("~lidar_canvas_width_px", 1280)
+        )
+        self.lidar_canvas_height_px = int(
+            rospy.get_param("~lidar_canvas_height_px", 720)
         )
 
         self.bridge = CvBridge()
         self.latest_explanation = {}
         self.latest_vlm = {}
         self.vlm_buffer = deque(maxlen=max(5, self.vlm_buffer_size))
+        self.latest_point_cloud_points = []
+        self.latest_point_cloud_header = None
         self.text_font = None
         self.focus_font = None
         self._init_fonts()
@@ -128,6 +149,9 @@ class DrivingCameraOverlayViewer:
         self.publisher = rospy.Publisher(self.output_topic, Image, queue_size=5)
         self.image_subscriber = rospy.Subscriber(
             self.image_topic, Image, self._on_image, queue_size=5
+        )
+        self.point_cloud_subscriber = rospy.Subscriber(
+            self.point_cloud_topic, PointCloud2, self._on_point_cloud, queue_size=2
         )
         self.explanation_subscriber = rospy.Subscriber(
             self.explanation_topic, String, self._on_explanation, queue_size=20
@@ -137,11 +161,13 @@ class DrivingCameraOverlayViewer:
         )
 
         rospy.loginfo(
-            "driving_camera_overlay_viewer started | image=%s explanation=%s vlm=%s output=%s",
+            "driving_camera_overlay_viewer started | image=%s point_cloud=%s explanation=%s vlm=%s output=%s render_mode=%s",
             self.image_topic,
+            self.point_cloud_topic,
             self.explanation_topic,
             self.vlm_topic,
             self.output_topic,
+            self.render_mode,
         )
 
     def _init_fonts(self):
@@ -179,6 +205,42 @@ class DrivingCameraOverlayViewer:
         self.latest_vlm = self._parse_json(message)
         if self.latest_vlm:
             self.vlm_buffer.append(self.latest_vlm)
+
+    def _on_point_cloud(self, message):
+        if self.render_mode != "lidar_only":
+            return
+
+        points = []
+        max_forward = max(1.0, float(self.lidar_bev_max_forward_m))
+        max_rear = max(0.0, float(self.lidar_bev_rear_m))
+        half_width = max(0.5, float(self.lidar_bev_half_width_m))
+        max_height_abs = max(0.3, float(self.lidar_bev_max_height_abs_m))
+
+        try:
+            for point_xyz in point_cloud2.read_points(
+                message,
+                field_names=("x", "y", "z"),
+                skip_nans=True,
+            ):
+                px = float(point_xyz[0])
+                py = float(point_xyz[1])
+                pz = float(point_xyz[2])
+                if px < (-max_rear) or px > max_forward:
+                    continue
+                if abs(py) > half_width or abs(pz) > max_height_abs:
+                    continue
+                points.append((px, py, pz))
+        except Exception as exc:
+            rospy.logwarn_throttle(5.0, "failed to parse point cloud in overlay viewer: %s", str(exc))
+            return
+
+        if len(points) > max(100, self.lidar_bev_max_points):
+            stride = int(np.ceil(float(len(points)) / float(max(100, self.lidar_bev_max_points))))
+            points = points[::stride]
+
+        self.latest_point_cloud_points = points
+        self.latest_point_cloud_header = message.header
+        self._render_and_publish_lidar_frame()
 
     def _region_to_rect(self, width, height, hint):
         if not hint.get("available"):
@@ -268,6 +330,15 @@ class DrivingCameraOverlayViewer:
                 best_delta = delta
         return best
 
+    def _latest_valid_payload(self):
+        candidates = list(self.vlm_buffer)
+        if not candidates:
+            return self.latest_vlm or {}
+        for payload in reversed(candidates):
+            if payload.get("status") in ("ok", "partial_ok"):
+                return payload
+        return candidates[-1] or {}
+
     def _draw_detector_boxes(self, image_bgr, payload):
         if not self.show_detector_boxes:
             return image_bgr
@@ -356,16 +427,19 @@ class DrivingCameraOverlayViewer:
             )
         return annotated
 
-    def _draw_lidar_bev(self, image_bgr, payload):
+    def _draw_lidar_bev(self, image_bgr, payload, raw_points=None):
         pointcloud_visual = (
             (payload or {})
             .get("detector_details", {})
             .get("pointcloud_visual", {})
         )
-        if not isinstance(pointcloud_visual, dict) or not pointcloud_visual.get("available"):
+        if not isinstance(pointcloud_visual, dict):
+            pointcloud_visual = {}
+        raw_points = list(raw_points or [])
+        if not raw_points and not pointcloud_visual.get("available"):
             return image_bgr
 
-        context_points = pointcloud_visual.get("context_points_xyz") or []
+        context_points = raw_points or pointcloud_visual.get("context_points_xyz") or []
         cluster_points = pointcloud_visual.get("cluster_points_xyz") or []
         if not context_points and not cluster_points:
             return image_bgr
@@ -380,6 +454,7 @@ class DrivingCameraOverlayViewer:
         robot_px = (canvas_w // 2, canvas_h - bottom_margin)
 
         max_forward_m = max(1.0, float(self.lidar_bev_max_forward_m))
+        max_rear_m = max(0.0, float(self.lidar_bev_rear_m))
         half_width_m = max(0.5, float(self.lidar_bev_half_width_m))
         point_radius_px = max(1, int(self.lidar_bev_point_radius_px))
 
@@ -387,15 +462,16 @@ class DrivingCameraOverlayViewer:
             forward_x = float(point_xyz[0])
             lateral_y = float(point_xyz[1])
             norm_y = lateral_y / half_width_m
-            norm_x = forward_x / max_forward_m
+            depth_span = max_forward_m + max_rear_m
+            norm_x = (forward_x + max_rear_m) / max(0.1, depth_span)
             px = int(round((canvas_w * 0.5) - (norm_y * (draw_w * 0.5))))
             py = int(round((canvas_h - bottom_margin) - (norm_x * draw_h)))
             return px, py
 
         overlay = annotated.copy()
         grid_color = (35, 35, 35)
-        for forward_m in (0.5, 1.0, 1.5, 2.0, 3.0):
-            if forward_m >= max_forward_m:
+        for forward_m in (0.0, 1.0, 2.0, 4.0, 6.0, 8.0):
+            if forward_m > max_forward_m:
                 continue
             _, py = world_to_canvas((forward_m, 0.0, 0.0))
             cv2.line(
@@ -447,6 +523,20 @@ class DrivingCameraOverlayViewer:
             )
 
         anchor_xyz = pointcloud_visual.get("anchor_xyz") or {}
+        id_text = "-"
+        selected_detection = (
+            (payload or {})
+            .get("detector_details", {})
+            .get("selected_detection", {})
+        )
+        if isinstance(selected_detection, dict):
+            id_parts = []
+            if selected_detection.get("memory_id"):
+                id_parts.append(str(selected_detection.get("memory_id")))
+            if selected_detection.get("track_key"):
+                id_parts.append(str(selected_detection.get("track_key")))
+            if id_parts:
+                id_text = " / ".join(id_parts)
         if anchor_xyz:
             anchor_px, anchor_py = world_to_canvas(
                 (
@@ -462,6 +552,15 @@ class DrivingCameraOverlayViewer:
                 (0, 180, 255),
                 2,
                 lineType=cv2.LINE_AA,
+            )
+            annotated = self._draw_unicode_text(
+                annotated,
+                id_text,
+                (anchor_px + 10, max(top_margin + 10, anchor_py - 10)),
+                (0, 220, 255),
+                self.text_font,
+                max_width_px=max(120, canvas_w - anchor_px - 20),
+                line_height=self.line_height,
             )
 
         robot_triangle = np.array(
@@ -519,7 +618,11 @@ class DrivingCameraOverlayViewer:
         if self.render_mode == "camera":
             annotated = self._draw_pointcloud_overlay(annotated, vlm)
         else:
-            annotated = self._draw_lidar_bev(annotated, vlm)
+            annotated = self._draw_lidar_bev(
+                annotated,
+                vlm,
+                raw_points=self.latest_point_cloud_points,
+            )
         annotated = self._draw_detector_boxes(annotated, vlm)
 
         lines = [
@@ -568,7 +671,98 @@ class DrivingCameraOverlayViewer:
 
         return annotated
 
+    def _annotate_lidar_canvas(self):
+        explanation = self.latest_explanation or {}
+        vlm = self._latest_valid_payload()
+        selected = (vlm or {}).get("detector_details", {}).get("selected_detection") or {}
+        memory_id = selected.get("memory_id")
+        track_key = selected.get("track_key")
+        selected_id_text = "-"
+        selected_id_parts = []
+        if memory_id:
+            selected_id_parts.append(str(memory_id))
+        if track_key:
+            selected_id_parts.append(str(track_key))
+        if selected_id_parts:
+            selected_id_text = " / ".join(selected_id_parts)
+
+        canvas = np.zeros(
+            (max(360, self.lidar_canvas_height_px), max(640, self.lidar_canvas_width_px), 3),
+            dtype=np.uint8,
+        )
+        annotated = self._draw_overlay_panel(canvas)
+        annotated = self._draw_lidar_bev(
+            annotated,
+            vlm,
+            raw_points=self.latest_point_cloud_points,
+        )
+
+        final_text = (vlm or {}).get("final_combined_explanation_ko")
+        if not final_text:
+            final_text = explanation.get("final_explanation_ko", "detector 설명 대기 중")
+        objects_text = (vlm or {}).get("detected_objects_ko", [])
+        lines = [
+            "event: {}".format(explanation.get("event_label", "-")),
+            "id: {}".format(selected_id_text),
+            "final: {}".format(final_text),
+            "objects: {}".format(objects_text),
+        ]
+
+        y = 35
+        for raw_line in lines:
+            if self.text_font is not None:
+                image_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                pil_image = PilImage.fromarray(image_rgb)
+                draw = ImageDraw.Draw(pil_image)
+                line_group = wrap_text_with_font(
+                    raw_line,
+                    draw,
+                    self.text_font,
+                    annotated.shape[1] - 40,
+                )
+                annotated = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+            else:
+                line_group = wrap_text(raw_line, 90)
+
+            for line in line_group:
+                annotated = self._draw_unicode_text(
+                    annotated,
+                    line,
+                    (20, y),
+                    (255, 255, 255),
+                    self.text_font,
+                    max_width_px=annotated.shape[1] - 40,
+                    line_height=self.line_height,
+                )
+                y += self.line_height
+                if y > 165:
+                    break
+            if y > 165:
+                break
+        return annotated
+
+    def _render_and_publish_lidar_frame(self):
+        if self.render_mode != "lidar_only":
+            return
+        annotated = self._annotate_lidar_canvas()
+        if self.display_window:
+            try:
+                cv2.imshow(self.window_name, annotated)
+                cv2.waitKey(1)
+            except Exception as exc:
+                rospy.logwarn_throttle(5.0, "cv2 viewer disabled due to display error: %s", str(exc))
+
+        try:
+            out_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
+            if self.latest_point_cloud_header is not None:
+                out_msg.header = self.latest_point_cloud_header
+            self.publisher.publish(out_msg)
+        except Exception as exc:
+            rospy.logwarn("failed to publish lidar overlay image: %s", str(exc))
+
     def _on_image(self, message):
+        if self.render_mode == "lidar_only":
+            return
         try:
             image = self.bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
         except Exception as exc:
