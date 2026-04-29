@@ -171,6 +171,20 @@ def parse_args():
     parser.add_argument("--qz", type=float, default=-0.5)
     parser.add_argument("--qw", type=float, default=0.5)
     parser.add_argument(
+        "--prior-camera-origin-in-source-frame-xyz",
+        nargs=3,
+        type=float,
+        default=None,
+        metavar=("X_M", "Y_M", "Z_M"),
+        help="source frame 기준 camera origin의 대략적 위치 prior",
+    )
+    parser.add_argument(
+        "--prior-camera-origin-sigma-m",
+        type=float,
+        default=0.10,
+        help="camera origin prior를 얼마나 강하게 믿을지에 대한 sigma (m)",
+    )
+    parser.add_argument(
         "--output",
         default=os.path.expanduser("~/camera_lidar_extrinsic_auto.yaml"),
     )
@@ -356,8 +370,28 @@ def project_points_camera_to_image(points_camera_xyz, camera_info):
     valid = z > 0.05
     u = np.zeros(len(points_camera_xyz), dtype=np.float64)
     v = np.zeros(len(points_camera_xyz), dtype=np.float64)
-    u[valid] = camera_info["fx"] * (points_camera_xyz[valid, 0] / z[valid]) + camera_info["cx"]
-    v[valid] = camera_info["fy"] * (points_camera_xyz[valid, 1] / z[valid]) + camera_info["cy"]
+    camera_matrix = np.array(
+        [
+            [camera_info["fx"], 0.0, camera_info["cx"]],
+            [0.0, camera_info["fy"], camera_info["cy"]],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    distortion = np.asarray(
+        camera_info.get("distortion", np.zeros((5,), dtype=np.float32)),
+        dtype=np.float64,
+    ).reshape(-1, 1)
+    if np.any(valid):
+        projected = cv2.projectPoints(
+            np.asarray(points_camera_xyz[valid], dtype=np.float64),
+            np.zeros((3, 1), dtype=np.float64),
+            np.zeros((3, 1), dtype=np.float64),
+            camera_matrix,
+            distortion,
+        )[0].reshape(-1, 2)
+        u[valid] = projected[:, 0]
+        v[valid] = projected[:, 1]
     return u, v, valid
 
 
@@ -495,7 +529,7 @@ def build_optimization_observations(camera_info, samples, board, dictionary, arg
     return observations
 
 
-def residual_function(params, observations, camera_info):
+def residual_function(params, observations, camera_info, args):
     rotation_lidar_to_camera, translation_lidar_to_camera, _ = params_to_transform(params)
     residuals = []
     for observation in observations:
@@ -519,14 +553,38 @@ def residual_function(params, observations, camera_info):
             + translation_lidar_to_camera
         )
         if centroid_camera[2] > 0.05:
-            u = camera_info["fx"] * (centroid_camera[0] / centroid_camera[2]) + camera_info["cx"]
-            v = camera_info["fy"] * (centroid_camera[1] / centroid_camera[2]) + camera_info["cy"]
+            centroid_uv = cv2.projectPoints(
+                np.asarray([centroid_camera], dtype=np.float64),
+                np.zeros((3, 1), dtype=np.float64),
+                np.zeros((3, 1), dtype=np.float64),
+                np.array(
+                    [
+                        [camera_info["fx"], 0.0, camera_info["cx"]],
+                        [0.0, camera_info["fy"], camera_info["cy"]],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                np.asarray(
+                    camera_info.get("distortion", np.zeros((5,), dtype=np.float32)),
+                    dtype=np.float64,
+                ).reshape(-1, 1),
+            )[0].reshape(-1, 2)
+            u = float(centroid_uv[0][0])
+            v = float(centroid_uv[0][1])
         else:
             u = -1000.0
             v = -1000.0
         bbox_center = observation["bbox_center"]
         residuals.append((u - float(bbox_center[0])) / 60.0)
         residuals.append((v - float(bbox_center[1])) / 60.0)
+
+    prior_origin = getattr(args, "prior_camera_origin_in_source_frame_xyz", None)
+    if prior_origin is not None:
+        camera_origin_in_lidar = -rotation_lidar_to_camera.T.dot(translation_lidar_to_camera)
+        sigma = max(1e-6, float(args.prior_camera_origin_sigma_m))
+        prior_residual = (camera_origin_in_lidar - np.asarray(prior_origin, dtype=np.float64)) / sigma
+        residuals.extend(prior_residual.tolist())
     return np.asarray(residuals, dtype=np.float64)
 
 
@@ -630,7 +688,7 @@ def main():
         result = least_squares(
             residual_function,
             params,
-            args=(observations, camera_info),
+            args=(observations, camera_info, args),
             method="trf",
             loss="soft_l1",
             max_nfev=100,
