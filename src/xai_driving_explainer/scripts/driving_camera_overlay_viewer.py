@@ -98,7 +98,7 @@ class DrivingCameraOverlayViewer:
             rospy.get_param("~show_detector_boxes", False)
         )
         self.show_pointcloud_bbox = bool(
-            rospy.get_param("~show_pointcloud_bbox", False)
+            rospy.get_param("~show_pointcloud_bbox", True)
         )
         self.font_scale = float(rospy.get_param("~font_scale", 0.55))
         self.line_height = int(rospy.get_param("~line_height", 22))
@@ -433,13 +433,31 @@ class DrivingCameraOverlayViewer:
 
         if self.show_pointcloud_bbox and len(bbox) == 4:
             x0, y0, x1, y1 = [int(value) for value in bbox]
-            cv2.rectangle(annotated, (x0, y0), (x1, y1), (255, 120, 0), 2)
-            label = "LiDAR {}pts".format(int(pointcloud_visual.get("point_count") or 0))
+            cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 120, 255), 2)
+            selected = (payload or {}).get("detector_details", {}).get("selected_detection") or {}
+            label_parts = ["LiDAR"]
+            memory_id = selected.get("memory_id")
+            track_key = selected.get("track_key")
+            if memory_id:
+                label_parts.append(str(memory_id))
+            if track_key:
+                label_parts.append(str(track_key))
+            label_ko = selected.get("label_ko") or selected.get("label")
+            if label_ko:
+                label_parts.append(str(label_ko))
+            point_count = int(
+                pointcloud_visual.get("sampled_point_count")
+                or pointcloud_visual.get("projected_point_count")
+                or 0
+            )
+            if point_count > 0:
+                label_parts.append("{}pts".format(point_count))
+            label = " | ".join(label_parts)
             annotated = self._draw_unicode_text(
                 annotated,
                 label,
                 (max(5, x0), max(20, y1 + 20)),
-                (255, 180, 0),
+                (0, 180, 255),
                 self.text_font,
                 max_width_px=max(100, annotated.shape[1] - x0 - 10),
                 line_height=self.line_height,
@@ -874,7 +892,7 @@ class DrivingCameraOverlayViewer:
         if label_ko:
             selected_id_text = "{} ({})".format(selected_id_text, label_ko) if selected_id_text != "-" else str(label_ko)
 
-        if self.render_mode == "camera":
+        if self.render_mode in ("camera", "side_by_side"):
             base_image = image_bgr.copy()
         else:
             base_image = np.zeros_like(image_bgr)
@@ -1024,7 +1042,7 @@ class DrivingCameraOverlayViewer:
         return annotated
 
     def _compose_side_by_side(self, camera_image_bgr, image_stamp=None):
-        left = camera_image_bgr.copy()
+        left = self._annotate_image(camera_image_bgr.copy(), image_stamp)
         right = self._annotate_lidar_canvas()
 
         target_height = max(left.shape[0], right.shape[0])
