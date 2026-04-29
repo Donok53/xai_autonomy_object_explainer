@@ -158,10 +158,15 @@ def parse_args():
     parser.add_argument("--bbox-padding-px", type=float, default=60.0)
     parser.add_argument("--selection-radius-m", type=float, default=1.20)
     parser.add_argument("--selection-plane-slab-m", type=float, default=0.40)
+    parser.add_argument("--board-extent-margin-m", type=float, default=0.08)
     parser.add_argument("--plane-inlier-threshold-m", type=float, default=0.03)
     parser.add_argument("--plane-ransac-iters", type=int, default=300)
     parser.add_argument("--min-plane-points", type=int, default=8)
     parser.add_argument("--point-residual-max-per-sample", type=int, default=40)
+    parser.add_argument("--board-extent-min-scale", type=float, default=0.35)
+    parser.add_argument("--board-extent-max-scale", type=float, default=1.80)
+    parser.add_argument("--board-aspect-tolerance", type=float, default=0.45)
+    parser.add_argument("--geometry-filter-warmup-iterations", type=int, default=1)
     parser.add_argument("--outer-iterations", type=int, default=4)
     parser.add_argument("--tx", type=float, default=0.0)
     parser.add_argument("--ty", type=float, default=-0.05913)
@@ -436,10 +441,56 @@ def fit_plane_ransac(points_xyz, threshold_m, iterations):
         "points_xyz": plane_points,
         "centroid_xyz": centroid,
         "ranges_xyz": ranges,
+        "axes_xyz": eigenvectors,
     }
 
 
-def select_lidar_board_points(sample, observation, camera_info, args, params):
+def expected_board_dimensions_m(args):
+    checker_size_m = float(args.checker_size_mm) / 1000.0
+    return (
+        max(1, int(args.columns)) * checker_size_m,
+        max(1, int(args.rows)) * checker_size_m,
+    )
+
+
+def plane_matches_board_geometry(plane, args):
+    ranges = np.asarray(plane.get("ranges_xyz", []), dtype=np.float64).reshape(-1)
+    if ranges.size < 2:
+        return False, {}
+
+    plane_extents = sorted([float(abs(ranges[0])), float(abs(ranges[1]))], reverse=True)
+    major_extent = plane_extents[0]
+    minor_extent = plane_extents[1]
+    expected_width, expected_height = expected_board_dimensions_m(args)
+    expected_extents = sorted([expected_width, expected_height], reverse=True)
+    expected_major = expected_extents[0]
+    expected_minor = expected_extents[1]
+
+    min_scale = max(0.05, float(args.board_extent_min_scale))
+    max_scale = max(min_scale, float(args.board_extent_max_scale))
+    aspect_tolerance = max(0.05, float(args.board_aspect_tolerance))
+
+    major_ok = (expected_major * min_scale) <= major_extent <= (expected_major * max_scale)
+    minor_ok = (expected_minor * min_scale) <= minor_extent <= (expected_minor * max_scale)
+    observed_aspect = major_extent / max(1e-6, minor_extent)
+    expected_aspect = expected_major / max(1e-6, expected_minor)
+    aspect_ok = abs(math.log(max(1e-6, observed_aspect / expected_aspect))) <= aspect_tolerance
+
+    diagnostics = {
+        "major_extent_m": major_extent,
+        "minor_extent_m": minor_extent,
+        "expected_major_m": expected_major,
+        "expected_minor_m": expected_minor,
+        "observed_aspect": observed_aspect,
+        "expected_aspect": expected_aspect,
+        "major_ok": bool(major_ok),
+        "minor_ok": bool(minor_ok),
+        "aspect_ok": bool(aspect_ok),
+    }
+    return bool(major_ok and minor_ok and aspect_ok), diagnostics
+
+
+def select_lidar_board_points(sample, observation, camera_info, args, params, enforce_board_geometry=True):
     rotation_lidar_to_camera, translation_lidar_to_camera, _ = params_to_transform(params)
     points_lidar = np.asarray(sample["points_xyz"], dtype=np.float64)
     points_camera = transform_points_lidar_to_camera(
@@ -473,6 +524,20 @@ def select_lidar_board_points(sample, observation, camera_info, args, params):
     board_normal_lidar_est = board_normal_lidar_est / max(
         1e-9, np.linalg.norm(board_normal_lidar_est)
     )
+    board_x_axis_camera = observation["rotation_board_to_camera"][:, 0]
+    board_y_axis_camera = observation["rotation_board_to_camera"][:, 1]
+    board_x_axis_lidar_est = rotation_lidar_to_camera.T.dot(board_x_axis_camera)
+    board_y_axis_lidar_est = rotation_lidar_to_camera.T.dot(board_y_axis_camera)
+    board_x_axis_lidar_est = board_x_axis_lidar_est / max(
+        1e-9, np.linalg.norm(board_x_axis_lidar_est)
+    )
+    board_y_axis_lidar_est = board_y_axis_lidar_est / max(
+        1e-9, np.linalg.norm(board_y_axis_lidar_est)
+    )
+    expected_width_m, expected_height_m = expected_board_dimensions_m(args)
+    extent_margin_m = max(0.01, float(args.board_extent_margin_m))
+    half_width_m = (0.5 * expected_width_m) + extent_margin_m
+    half_height_m = (0.5 * expected_height_m) + extent_margin_m
     radius_mask = np.linalg.norm(points_lidar - board_center_lidar_est.reshape(1, 3), axis=1) <= float(
         args.selection_radius_m
     )
@@ -481,10 +546,16 @@ def select_lidar_board_points(sample, observation, camera_info, args, params):
         np.abs(points_lidar.dot(board_normal_lidar_est) + plane_offset)
         <= float(args.selection_plane_slab_m)
     )
-    candidate_mask = image_mask & radius_mask & plane_mask
+    deltas = points_lidar - board_center_lidar_est.reshape(1, 3)
+    local_x = np.abs(deltas.dot(board_x_axis_lidar_est))
+    local_y = np.abs(deltas.dot(board_y_axis_lidar_est))
+    board_rect_mask = (local_x <= half_width_m) & (local_y <= half_height_m)
+    candidate_mask = image_mask & radius_mask & plane_mask & board_rect_mask
     candidate_points = points_lidar[candidate_mask]
     if len(candidate_points) < int(args.min_plane_points):
-        candidate_points = points_lidar[image_mask]
+        candidate_points = points_lidar[image_mask & plane_mask & board_rect_mask]
+    if len(candidate_points) < int(args.min_plane_points):
+        candidate_points = points_lidar[image_mask & plane_mask]
     if len(candidate_points) < int(args.min_plane_points):
         return None
 
@@ -499,16 +570,27 @@ def select_lidar_board_points(sample, observation, camera_info, args, params):
     if float(np.dot(plane["normal"], board_normal_lidar_est)) < 0.0:
         plane["normal"] = -plane["normal"]
         plane["d"] = -plane["d"]
+    matches_board, diagnostics = plane_matches_board_geometry(plane, args)
+    plane["board_geometry"] = diagnostics
+    if enforce_board_geometry and not matches_board:
+        return None
     return plane
 
 
-def build_optimization_observations(camera_info, samples, board, dictionary, args, params):
+def build_optimization_observations(camera_info, samples, board, dictionary, args, params, enforce_board_geometry=True):
     observations = []
     for sample in samples:
         observation = sample.get("charuco_observation")
         if observation is None:
             continue
-        plane = select_lidar_board_points(sample, observation, camera_info, args, params)
+        plane = select_lidar_board_points(
+            sample,
+            observation,
+            camera_info,
+            args,
+            params,
+            enforce_board_geometry=enforce_board_geometry,
+        )
         if plane is None:
             continue
         points_xyz = plane["points_xyz"]
@@ -666,6 +748,7 @@ def main():
 
     observations = []
     for iteration in range(max(1, int(args.outer_iterations))):
+        use_geometry_filter = iteration >= max(0, int(args.geometry_filter_warmup_iterations))
         observations = build_optimization_observations(
             camera_info,
             samples,
@@ -673,11 +756,23 @@ def main():
             dictionary,
             args,
             params,
+            enforce_board_geometry=use_geometry_filter,
         )
+        if len(observations) < 3 and use_geometry_filter:
+            observations = build_optimization_observations(
+                camera_info,
+                samples,
+                board,
+                dictionary,
+                args,
+                params,
+                enforce_board_geometry=False,
+            )
         print(
-            "[auto-calib] iteration {} observations={}".format(
+            "[auto-calib] iteration {} observations={} geometry_filter={}".format(
                 iteration + 1,
                 len(observations),
+                "on" if use_geometry_filter else "off",
             )
         )
         if len(observations) < 3:
