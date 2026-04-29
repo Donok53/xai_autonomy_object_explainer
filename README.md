@@ -33,6 +33,10 @@ track hold 시간과 label smoothing을 더 보수적으로 적용한다.
 최근에는 여기에 `/planning/linefit_ground/non_ground_cloud`와 `camera_info`를 함께 읽어
 planner가 보고 있는 `anchor_xyz` 주변의 point cloud를 카메라 화면으로 투영하고,
 YOLO는 `무엇으로 보이는지`, point cloud는 `실제로 어디에 있는지`를 함께 다루도록 확장했다.
+현재 기본 fallback extrinsic은 `base_link -> camera_color_optical_frame` 기준으로
+OS1-128 / D435 조합의 전방 정렬 제약과 ChArUco bag를 함께 사용해 보정한 값이 들어가 있다.
+즉 TF가 비어 있어도, detector runtime은 기본적으로 이 보정값을 사용해
+point cloud와 camera semantic을 같은 화면 기준으로 묶도록 설정돼 있다.
 
 ## 워크스페이스 구조
 
@@ -291,6 +295,14 @@ ChArUco intrinsic 결과를 바로 적용하려면:
 
 현재 detector runtime도 `/camera/color/camera_info`의 distortion 계수를 읽어,
 camera raw image 기준 point cloud projection에 실제 왜곡 모델을 반영한다.
+기본 fallback transform은 현재 다음 값이다.
+
+```text
+source_frame: base_link
+target_frame: camera_color_optical_frame
+translation_xyz: [0.461221, -0.037022, -0.023161]
+rotation_xyzw: [0.0, -0.707107, 0.0, 0.707107]
+```
 
 주요 조작:
 

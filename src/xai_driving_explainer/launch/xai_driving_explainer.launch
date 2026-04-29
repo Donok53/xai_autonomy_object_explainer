@@ -107,8 +107,8 @@
   <arg name="scene_detector_point_cloud_fallback_transform_enabled" default="true"/>
   <arg name="scene_detector_point_cloud_fallback_source_frame" default="base_link"/>
   <arg name="scene_detector_point_cloud_fallback_target_frame" default="camera_color_optical_frame"/>
-  <arg name="scene_detector_point_cloud_fallback_translation_xyz" default="[0.0, -0.05913, 0.0]"/>
-  <arg name="scene_detector_point_cloud_fallback_rotation_xyzw" default="[-0.5, 0.5, -0.5, 0.5]"/>
+  <arg name="scene_detector_point_cloud_fallback_translation_xyz" default="[0.461221, -0.037022, -0.023161]"/>
+  <arg name="scene_detector_point_cloud_fallback_rotation_xyzw" default="[0.0, -0.707107, 0.0, 0.707107]"/>
   <arg name="camera_overlay_vlm_buffer_size" default="40"/>
 
   <node pkg="xai_driving_explainer"
