@@ -751,6 +751,20 @@ def _normalize_vector(vector_xyz):
     return np.asarray(vector_xyz, dtype=np.float64) / norm
 
 
+def _normalize_xy_direction(vector_xyz, fallback_xy):
+    direction_xy = np.array(
+        [float(vector_xyz[0]), float(vector_xyz[1])],
+        dtype=np.float64,
+    )
+    norm = float(np.linalg.norm(direction_xy))
+    if norm <= 1e-9:
+        direction_xy = np.array(fallback_xy, dtype=np.float64)
+        norm = float(np.linalg.norm(direction_xy))
+        if norm <= 1e-9:
+            return np.array([1.0, 0.0], dtype=np.float64)
+    return direction_xy / norm
+
+
 def draw_lidar_overview(
     context_points_lidar,
     highlighted_points_lidar,
@@ -859,30 +873,44 @@ def draw_lidar_overview(
 
     camera_origin_px = world_to_canvas((camera_origin_lidar[0], camera_origin_lidar[1], camera_origin_lidar[2]))
     ray_length_m = min(max_forward_m, 4.0)
+    center_xy = _normalize_xy_direction(camera_center_ray, (1.0, 0.0))
+    left_xy = _normalize_xy_direction(camera_left_ray, tuple(center_xy))
+    right_xy = _normalize_xy_direction(camera_right_ray, tuple(center_xy))
     center_tip = world_to_canvas(
         (
-            camera_origin_lidar[0] + (camera_center_ray[0] * ray_length_m),
-            camera_origin_lidar[1] + (camera_center_ray[1] * ray_length_m),
+            camera_origin_lidar[0] + (center_xy[0] * ray_length_m),
+            camera_origin_lidar[1] + (center_xy[1] * ray_length_m),
             0.0,
         )
     )
     left_tip = world_to_canvas(
         (
-            camera_origin_lidar[0] + (camera_left_ray[0] * ray_length_m),
-            camera_origin_lidar[1] + (camera_left_ray[1] * ray_length_m),
+            camera_origin_lidar[0] + (left_xy[0] * ray_length_m),
+            camera_origin_lidar[1] + (left_xy[1] * ray_length_m),
             0.0,
         )
     )
     right_tip = world_to_canvas(
         (
-            camera_origin_lidar[0] + (camera_right_ray[0] * ray_length_m),
-            camera_origin_lidar[1] + (camera_right_ray[1] * ray_length_m),
+            camera_origin_lidar[0] + (right_xy[0] * ray_length_m),
+            camera_origin_lidar[1] + (right_xy[1] * ray_length_m),
             0.0,
         )
     )
+    fov_overlay = canvas.copy()
+    fov_polygon = np.array(
+        [
+            [camera_origin_px[0], camera_origin_px[1]],
+            [left_tip[0], left_tip[1]],
+            [right_tip[0], right_tip[1]],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(fov_overlay, fov_polygon, (70, 90, 40))
+    canvas = cv2.addWeighted(fov_overlay, 0.22, canvas, 0.78, 0.0)
     cv2.line(canvas, camera_origin_px, center_tip, (255, 255, 0), 2, cv2.LINE_AA)
-    cv2.line(canvas, camera_origin_px, left_tip, (80, 180, 255), 1, cv2.LINE_AA)
-    cv2.line(canvas, camera_origin_px, right_tip, (80, 180, 255), 1, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, left_tip, (80, 180, 255), 2, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, right_tip, (80, 180, 255), 2, cv2.LINE_AA)
     cv2.circle(canvas, camera_origin_px, 4, (255, 255, 0), -1, lineType=cv2.LINE_AA)
 
     robot_triangle = np.array(
