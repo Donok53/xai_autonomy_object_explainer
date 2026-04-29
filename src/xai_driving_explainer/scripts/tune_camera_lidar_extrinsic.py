@@ -123,13 +123,13 @@ def parse_args():
         help="sequential 모드에서 시작할 샘플 인덱스",
     )
     parser.add_argument("--max-sync-dt-s", type=float, default=0.12)
-    parser.add_argument("--max-cloud-points", type=int, default=9000)
+    parser.add_argument("--max-cloud-points", type=int, default=18000)
     parser.add_argument("--forward-m", type=float, default=12.0)
     parser.add_argument("--rear-m", type=float, default=2.0)
     parser.add_argument("--half-width-m", type=float, default=8.0)
     parser.add_argument("--height-abs-m", type=float, default=2.5)
     parser.add_argument("--max-range-m", type=float, default=12.0)
-    parser.add_argument("--point-radius-px", type=int, default=2)
+    parser.add_argument("--point-radius-px", type=int, default=3)
     parser.add_argument("--overview-width-px", type=int, default=560)
     parser.add_argument(
         "--camera-frustum-margin-deg",
@@ -708,7 +708,7 @@ def render_projection(sample, camera_info, state, args):
         "step t={:.3f}m r={:.2f}deg | n/p sample | f frustum on/off | g ref capture | c ref clear | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
         ),
-        "1/2:x-+ 3/4:y-+ 5/6:z-+  u/o:roll-+  i/k:pitch-+  j/l:yaw-+  [-] step down  [=] step up",
+        "1/2:image-x  3/4:image-y  5/6:depth  u/o:roll  i/k:pitch  j/l:yaw  [-]/[=]:step",
     ]
     y = 24
     for line in lines:
@@ -906,11 +906,11 @@ def draw_lidar_overview(
         ],
         dtype=np.int32,
     )
-    cv2.fillConvexPoly(fov_overlay, fov_polygon, (70, 90, 40))
-    canvas = cv2.addWeighted(fov_overlay, 0.22, canvas, 0.78, 0.0)
+    cv2.fillConvexPoly(fov_overlay, fov_polygon, (180, 110, 20))
+    canvas = cv2.addWeighted(fov_overlay, 0.42, canvas, 0.58, 0.0)
     cv2.line(canvas, camera_origin_px, center_tip, (255, 255, 0), 2, cv2.LINE_AA)
-    cv2.line(canvas, camera_origin_px, left_tip, (80, 180, 255), 2, cv2.LINE_AA)
-    cv2.line(canvas, camera_origin_px, right_tip, (80, 180, 255), 2, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, left_tip, (255, 220, 80), 3, cv2.LINE_AA)
+    cv2.line(canvas, camera_origin_px, right_tip, (255, 220, 80), 3, cv2.LINE_AA)
     cv2.circle(canvas, camera_origin_px, 4, (255, 255, 0), -1, lineType=cv2.LINE_AA)
 
     robot_triangle = np.array(
@@ -928,7 +928,7 @@ def draw_lidar_overview(
         "LiDAR overview (BEV)",
         "gray: context  red: board-candidate",
         "green: reference snapshot",
-        "yellow: camera center  blue: camera FOV",
+        "yellow: camera center  amber: camera FOV area",
     ]
     y = 22
     for line in title_lines:
