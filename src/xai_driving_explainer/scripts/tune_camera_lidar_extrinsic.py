@@ -180,7 +180,8 @@ def decode_ros_image(bridge, msg):
 def sample_point_cloud(msg, max_points):
     points = []
     width = int(getattr(msg, "width", 0) or 0)
-    estimated = max(1, width)
+    height = int(getattr(msg, "height", 0) or 0)
+    estimated = max(1, width * max(1, height))
     stride = max(1, int(math.ceil(float(estimated) / float(max(1, max_points)))))
     for index, point in enumerate(
         point_cloud2.read_points(
