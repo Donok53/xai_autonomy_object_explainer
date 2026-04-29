@@ -10,6 +10,7 @@ import math
 from collections import deque
 
 import cv2
+import numpy as np
 import rospy
 import sensor_msgs.point_cloud2 as point_cloud2
 import tf2_ros
@@ -700,6 +701,7 @@ class DrivingSceneDetectorNode:
             "fy": 0.0,
             "cx": 0.0,
             "cy": 0.0,
+            "distortion": np.zeros((5,), dtype=np.float32),
         }
         self.point_cloud_transform_warned = False
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(30.0))
@@ -808,6 +810,7 @@ class DrivingSceneDetectorNode:
                 "fy": float(k_values[4] or 0.0),
                 "cx": float(k_values[2] or 0.0),
                 "cy": float(k_values[5] or 0.0),
+                "distortion": np.array(list(message.D), dtype=np.float32),
             }
         except Exception as exc:
             rospy.logwarn("failed to parse camera info: %s", str(exc))
@@ -1130,6 +1133,18 @@ class DrivingSceneDetectorNode:
         fy = float(camera_projection.get("fy") or 0.0)
         cx = float(camera_projection.get("cx") or 0.0)
         cy = float(camera_projection.get("cy") or 0.0)
+        distortion = np.asarray(
+            camera_projection.get("distortion", np.zeros((5,), dtype=np.float32)),
+            dtype=np.float64,
+        ).reshape(-1, 1)
+        camera_matrix = np.array(
+            [
+                [fx, 0.0, cx],
+                [0.0, fy, cy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
         image_width = max(
             1,
             int(camera_projection.get("width") or image_entry["image"].shape[1]),
@@ -1146,6 +1161,7 @@ class DrivingSceneDetectorNode:
         max_u = None
         max_v = None
         projected_depths = []
+        camera_points = []
 
         for point_xyz in cluster_points:
             rotated = rotate_point_by_quaternion(point_xyz, rotation_xyzw)
@@ -1154,13 +1170,27 @@ class DrivingSceneDetectorNode:
             camera_z = float(rotated[2]) + float(translation_xyz[2])
             if camera_z <= 0.10 or camera_z >= max_range:
                 continue
-            pixel_u = (fx * (camera_x / camera_z)) + cx
-            pixel_v = (fy * (camera_y / camera_z)) + cy
+            camera_points.append((camera_x, camera_y, camera_z))
+            projected_depths.append(camera_z)
+
+        if not camera_points:
+            return visual
+
+        projected_pixels = cv2.projectPoints(
+            np.asarray(camera_points, dtype=np.float64),
+            np.zeros((3, 1), dtype=np.float64),
+            np.zeros((3, 1), dtype=np.float64),
+            camera_matrix,
+            distortion,
+        )[0].reshape(-1, 2)
+
+        for projected_uv in projected_pixels:
+            pixel_u = float(projected_uv[0])
+            pixel_v = float(projected_uv[1])
             if pixel_u < 0.0 or pixel_u >= float(image_width):
                 continue
             if pixel_v < 0.0 or pixel_v >= float(image_height):
                 continue
-            projected_depths.append(camera_z)
             projected_points.append([int(round(pixel_u)), int(round(pixel_v))])
             min_u = pixel_u if min_u is None else min(min_u, pixel_u)
             min_v = pixel_v if min_v is None else min(min_v, pixel_v)

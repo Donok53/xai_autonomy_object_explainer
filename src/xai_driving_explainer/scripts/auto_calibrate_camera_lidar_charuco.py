@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import argparse
+import ast
 import math
 import os
 import sys
@@ -101,6 +102,36 @@ def camera_info_from_msg(msg):
     }
 
 
+def load_camera_info_from_yaml(yaml_path):
+    path = os.path.abspath(os.path.expanduser(str(yaml_path)))
+    if not os.path.exists(path):
+        raise RuntimeError("intrinsic yaml 파일이 존재하지 않습니다: {}".format(path))
+
+    values = {}
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, raw_value = line.split(":", 1)
+            values[key.strip()] = raw_value.strip()
+
+    camera_matrix = list(ast.literal_eval(values["camera_matrix"]))
+    distortion = list(
+        ast.literal_eval(values.get("distortion_coefficients", "[0, 0, 0, 0, 0]"))
+    )
+    return {
+        "frame_id": str(values.get("frame_id", "camera_color_optical_frame")),
+        "width": int(float(values["image_width"])),
+        "height": int(float(values["image_height"])),
+        "fx": float(camera_matrix[0]),
+        "fy": float(camera_matrix[4]),
+        "cx": float(camera_matrix[2]),
+        "cy": float(camera_matrix[5]),
+        "distortion": np.array(distortion, dtype=np.float64),
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Automatically estimate LiDAR-to-camera extrinsic from a ChArUco bag."
@@ -108,6 +139,11 @@ def parse_args():
     parser.add_argument("--bag", required=True)
     parser.add_argument("--image-topic", default="/camera/color/image_raw")
     parser.add_argument("--camera-info-topic", default="/camera/color/camera_info")
+    parser.add_argument(
+        "--intrinsic-yaml",
+        default="",
+        help="ChArUco intrinsic 보정 결과 YAML 경로",
+    )
     parser.add_argument("--point-cloud-topic", default="/ouster/points")
     parser.add_argument("--rows", type=int, default=6)
     parser.add_argument("--columns", type=int, default=8)
@@ -163,6 +199,8 @@ def collect_candidate_samples(args, board, dictionary):
     bridge = CvBridge()
     latest_cloud = None
     camera_info = None
+    if args.intrinsic_yaml:
+        camera_info = load_camera_info_from_yaml(args.intrinsic_yaml)
     candidates = []
     accepted_images = 0
     bag = rosbag.Bag(args.bag)
@@ -497,6 +535,8 @@ def save_yaml(output_path, camera_info, source_frame, params, observations, iter
     if directory:
         os.makedirs(directory, exist_ok=True)
     rotation_lidar_to_camera, translation_lidar_to_camera, quaternion_xyzw = params_to_transform(params)
+    camera_origin_in_lidar = -rotation_lidar_to_camera.T.dot(translation_lidar_to_camera)
+    baseline_distance_m = float(np.linalg.norm(camera_origin_in_lidar))
     content = []
     content.append("source_frame: {}".format(source_frame))
     content.append("target_frame: {}".format(camera_info["frame_id"]))
@@ -520,6 +560,14 @@ def save_yaml(output_path, camera_info, source_frame, params, observations, iter
             params[3], params[4], params[5]
         )
     )
+    content.append(
+        "camera_origin_in_source_frame_xyz: [{:.6f}, {:.6f}, {:.6f}]".format(
+            camera_origin_in_lidar[0],
+            camera_origin_in_lidar[1],
+            camera_origin_in_lidar[2],
+        )
+    )
+    content.append("baseline_distance_m: {:.6f}".format(baseline_distance_m))
     content.append("used_observations: {}".format(len(observations)))
     content.append("outer_iterations: {}".format(int(iterations)))
     content.append(

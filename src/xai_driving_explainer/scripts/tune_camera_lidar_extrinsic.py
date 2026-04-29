@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import argparse
+import ast
 import math
 import os
 import sys
@@ -141,6 +142,13 @@ def parse_args():
     parser.add_argument("--cx", type=float, default=0.0)
     parser.add_argument("--cy", type=float, default=0.0)
     parser.add_argument(
+        "--intrinsic-yaml",
+        default="",
+        help="ChArUco intrinsic 보정 결과 YAML 경로",
+    )
+    parser.add_argument("--undistort-display", action="store_true", default=True)
+    parser.add_argument("--no-undistort-display", action="store_true")
+    parser.add_argument(
         "--output",
         default=os.path.expanduser("~/camera_lidar_extrinsic_tuned.yaml"),
     )
@@ -234,6 +242,63 @@ def load_camera_info_from_bag(bag_path, camera_info_topic):
     return None
 
 
+def camera_matrix_from_info(camera_info):
+    return np.array(
+        [
+            [float(camera_info["fx"]), 0.0, float(camera_info["cx"])],
+            [0.0, float(camera_info["fy"]), float(camera_info["cy"])],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+
+def load_camera_info_from_yaml(yaml_path):
+    path = os.path.abspath(os.path.expanduser(str(yaml_path)))
+    if not os.path.exists(path):
+        raise RuntimeError("intrinsic yaml 파일이 존재하지 않습니다: {}".format(path))
+
+    values = {}
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, raw_value = line.split(":", 1)
+            values[key.strip()] = raw_value.strip()
+
+    camera_matrix = list(ast.literal_eval(values["camera_matrix"]))
+    distortion = list(
+        ast.literal_eval(values.get("distortion_coefficients", "[0, 0, 0, 0, 0]"))
+    )
+    return {
+        "frame_id": str(values.get("frame_id", "camera_color_optical_frame")),
+        "width": int(float(values["image_width"])),
+        "height": int(float(values["image_height"])),
+        "fx": float(camera_matrix[0]),
+        "fy": float(camera_matrix[4]),
+        "cx": float(camera_matrix[2]),
+        "cy": float(camera_matrix[5]),
+        "distortion": np.array(distortion, dtype=np.float32),
+    }
+
+
+def undistort_image_points(points_xy, camera_info):
+    if not points_xy:
+        return []
+    camera_matrix = camera_matrix_from_info(camera_info)
+    distortion = np.asarray(
+        camera_info.get("distortion", np.zeros((5,), dtype=np.float32)),
+        dtype=np.float64,
+    ).reshape(-1, 1)
+    if distortion.size == 0:
+        return [tuple(float(v) for v in point_xy) for point_xy in points_xy]
+
+    points = np.asarray(points_xy, dtype=np.float64).reshape(-1, 1, 2)
+    undistorted = cv2.undistortPoints(points, camera_matrix, distortion, P=camera_matrix)
+    return [(float(point[0][0]), float(point[0][1])) for point in undistorted]
+
+
 def detect_charuco_observation(image_bgr, camera_info, board, dictionary, args):
     if board is None or dictionary is None:
         return None
@@ -303,7 +368,11 @@ def load_samples(args):
     bridge = CvBridge()
     samples = []
     latest_cloud = None
-    camera_info = camera_info_from_args(args)
+    camera_info = None
+    if args.intrinsic_yaml:
+        camera_info = load_camera_info_from_yaml(args.intrinsic_yaml)
+    if camera_info is None:
+        camera_info = camera_info_from_args(args)
     dictionary, board = build_charuco_board(args)
     accepted_images = 0
     bag = rosbag.Bag(args.bag)
@@ -382,6 +451,15 @@ def load_samples(args):
 
 def render_projection(sample, camera_info, state, args):
     image_bgr = sample["image_bgr"].copy()
+    camera_matrix = camera_matrix_from_info(camera_info)
+    distortion = np.asarray(
+        camera_info.get("distortion", np.zeros((5,), dtype=np.float32)),
+        dtype=np.float64,
+    ).reshape(-1, 1)
+    use_undistorted_display = bool(args.undistort_display) and distortion.size > 0
+    if use_undistorted_display:
+        image_bgr = cv2.undistort(image_bgr, camera_matrix, distortion, None, camera_matrix)
+
     fx = float(camera_info["fx"])
     fy = float(camera_info["fy"])
     cx = float(camera_info["cx"])
@@ -402,9 +480,25 @@ def render_projection(sample, camera_info, state, args):
     board_center_lidar = None
     board_normal_lidar = None
     if charuco_observation is not None:
+        bbox_points = [
+            tuple(charuco_observation["bbox_min"]),
+            (
+                float(charuco_observation["bbox_max"][0]),
+                float(charuco_observation["bbox_min"][1]),
+            ),
+            tuple(charuco_observation["bbox_max"]),
+            (
+                float(charuco_observation["bbox_min"][0]),
+                float(charuco_observation["bbox_max"][1]),
+            ),
+        ]
+        if use_undistorted_display:
+            bbox_points = undistort_image_points(bbox_points, camera_info)
+        bbox_x_values = [point_xy[0] for point_xy in bbox_points]
+        bbox_y_values = [point_xy[1] for point_xy in bbox_points]
         board_bbox = (
-            charuco_observation["bbox_min"],
-            charuco_observation["bbox_max"],
+            (min(bbox_x_values), min(bbox_y_values)),
+            (max(bbox_x_values), max(bbox_y_values)),
         )
         board_center_lidar = rotation_lidar_to_camera.T.dot(
             charuco_observation["board_center_camera"] - translation_lidar_to_camera
@@ -431,8 +525,19 @@ def render_projection(sample, camera_info, state, args):
         if camera_z <= 0.10 or camera_z >= args.max_range_m:
             continue
 
-        u = (fx * (camera_x / camera_z)) + cx
-        v = (fy * (camera_y / camera_z)) + cy
+        if use_undistorted_display:
+            u = (fx * (camera_x / camera_z)) + cx
+            v = (fy * (camera_y / camera_z)) + cy
+        else:
+            projected = cv2.projectPoints(
+                np.asarray([[camera_x, camera_y, camera_z]], dtype=np.float64),
+                np.zeros((3, 1), dtype=np.float64),
+                np.zeros((3, 1), dtype=np.float64),
+                camera_matrix,
+                distortion,
+            )[0].reshape(-1, 2)
+            u = float(projected[0][0])
+            v = float(projected[0][1])
         if u < 0.0 or u >= float(image_w) or v < 0.0 or v >= float(image_h):
             continue
         projected_count += 1
@@ -481,6 +586,9 @@ def render_projection(sample, camera_info, state, args):
 
     if charuco_observation is not None:
         bbox_min, bbox_max = board_bbox
+        corner_points = list(charuco_observation["charuco_corners"])
+        if use_undistorted_display:
+            corner_points = undistort_image_points(corner_points, camera_info)
         cv2.rectangle(
             image_bgr,
             (int(round(bbox_min[0])), int(round(bbox_min[1]))),
@@ -489,7 +597,7 @@ def render_projection(sample, camera_info, state, args):
             2,
             lineType=cv2.LINE_AA,
         )
-        for point_uv in charuco_observation["charuco_corners"]:
+        for point_uv in corner_points:
             cv2.circle(
                 image_bgr,
                 (int(round(point_uv[0])), int(round(point_uv[1]))),
@@ -519,6 +627,7 @@ def render_projection(sample, camera_info, state, args):
             0 if charuco_observation is None else int(charuco_observation["charuco_count"]),
             int(highlighted_board_count),
         ),
+        "display = {}".format("undistorted" if use_undistorted_display else "raw"),
         "step t={:.3f}m r={:.2f}deg | n/p sample | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
         ),
@@ -544,6 +653,13 @@ def save_yaml(output_path, camera_info, sample, state, quaternion_xyzw):
     directory = os.path.dirname(output_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
+    rotation_lidar_to_camera = rotation_matrix_from_quaternion(quaternion_xyzw)
+    translation_lidar_to_camera = np.array(
+        [state["tx"], state["ty"], state["tz"]],
+        dtype=np.float64,
+    )
+    camera_origin_in_lidar = -rotation_lidar_to_camera.T.dot(translation_lidar_to_camera)
+    baseline_distance_m = float(np.linalg.norm(camera_origin_in_lidar))
     content = []
     content.append("bag: {}".format(state["bag_path"]))
     content.append("source_frame: {}".format(sample["cloud_frame_id"]))
@@ -567,6 +683,14 @@ def save_yaml(output_path, camera_info, sample, state, quaternion_xyzw):
         )
     )
     content.append(
+        "camera_origin_in_source_frame_xyz: [{:.6f}, {:.6f}, {:.6f}]".format(
+            camera_origin_in_lidar[0],
+            camera_origin_in_lidar[1],
+            camera_origin_in_lidar[2],
+        )
+    )
+    content.append("baseline_distance_m: {:.6f}".format(baseline_distance_m))
+    content.append(
         "launch_override: >-\n  scene_detector_point_cloud_fallback_source_frame:={} scene_detector_point_cloud_fallback_target_frame:={} scene_detector_point_cloud_fallback_translation_xyz:='[{:.6f}, {:.6f}, {:.6f}]' scene_detector_point_cloud_fallback_rotation_xyzw:='[{:.6f}, {:.6f}, {:.6f}, {:.6f}]'".format(
             sample["cloud_frame_id"],
             camera_info["frame_id"],
@@ -585,6 +709,8 @@ def save_yaml(output_path, camera_info, sample, state, quaternion_xyzw):
 
 def main():
     args = parse_args()
+    if args.no_undistort_display:
+        args.undistort_display = False
     camera_info, samples = load_samples(args)
 
     init_quaternion = (args.qx, args.qy, args.qz, args.qw)

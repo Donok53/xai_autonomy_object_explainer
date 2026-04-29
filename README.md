@@ -201,6 +201,7 @@ source devel/setup.bash
 - Dictionary `DICT_4X4_50`
 
 결과는 `~/camera_intrinsic_charuco.yaml`에 저장되며, `fx/fy/cx/cy`와 distortion이 함께 기록된다.
+이제 수동 extrinsic 튜너는 이 YAML을 직접 읽을 수 있고, 화면도 기본적으로 undistort된 카메라 기준으로 보여준다.
 
 설계도면이나 정적 TF가 없을 때는, bag를 보면서 카메라 위에 point cloud를 직접 투영해
 `tx/ty/tz/roll/pitch/yaw`를 수동으로 맞추는 편이 가장 현실적이다.
@@ -217,6 +218,15 @@ source devel/setup.bash
 /usr/bin/python3 src/xai_driving_explainer/scripts/auto_calibrate_camera_lidar_charuco.py \
   --bag /home/byeongjae/bagfiles/yongbong_checkerboard_v2.bag \
   --point-cloud-topic /ouster/points
+```
+
+다시 계산한 camera intrinsic을 같이 쓰고 싶다면:
+
+```bash
+/usr/bin/python3 src/xai_driving_explainer/scripts/auto_calibrate_camera_lidar_charuco.py \
+  --bag /home/byeongjae/bagfiles/yongbong_checkerboard_v2.bag \
+  --point-cloud-topic /ouster/points \
+  --intrinsic-yaml ~/camera_intrinsic_charuco.yaml
 ```
 
 기본값은 현재 작업에 맞춰 아래처럼 잡혀 있다.
@@ -238,6 +248,15 @@ source /opt/ros/noetic/setup.bash
 source devel/setup.bash
 /usr/bin/python3 src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
   --bag /home/byeongjae/bagfiles/record_real_20260422_180049.bag
+```
+
+ChArUco intrinsic 결과를 바로 적용하려면:
+
+```bash
+/usr/bin/python3 src/xai_driving_explainer/scripts/tune_camera_lidar_extrinsic.py \
+  --bag /home/byeongjae/bagfiles/yongbong_checkerboard_v2.bag \
+  --point-cloud-topic /ouster/points \
+  --intrinsic-yaml ~/camera_intrinsic_charuco.yaml
 ```
 
 `camera_info`가 없는 bag라면 다른 bag에서 intrinsic만 읽어와서 같이 쓸 수 있다.
@@ -269,6 +288,9 @@ source devel/setup.bash
 - image: `/camera/color/image_raw`
 - camera info: `/camera/color/camera_info`
 - point cloud: `/planning/linefit_ground/non_ground_cloud`
+
+현재 detector runtime도 `/camera/color/camera_info`의 distortion 계수를 읽어,
+camera raw image 기준 point cloud projection에 실제 왜곡 모델을 반영한다.
 
 주요 조작:
 
