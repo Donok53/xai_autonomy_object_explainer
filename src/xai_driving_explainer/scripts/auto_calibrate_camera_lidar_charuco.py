@@ -88,6 +88,26 @@ def params_to_transform(params):
     return rotation, translation, quaternion_xyzw
 
 
+def expand_params_with_args(params, args):
+    params = np.asarray(params, dtype=np.float64).reshape(-1)
+    if params.size == 6:
+        return params
+    if params.size == 3 and bool(getattr(args, "lock_initial_rotation", False)):
+        initial_rpy = getattr(args, "_initial_rpy_prior_deg", (0.0, -90.0, 0.0))
+        return np.array(
+            [
+                float(params[0]),
+                float(params[1]),
+                float(params[2]),
+                float(initial_rpy[0]),
+                float(initial_rpy[1]),
+                float(initial_rpy[2]),
+            ],
+            dtype=np.float64,
+        )
+    raise RuntimeError("지원하지 않는 파라미터 길이입니다: {}".format(params.size))
+
+
 def camera_info_from_msg(msg):
     k_values = list(msg.K)
     return {
@@ -171,10 +191,21 @@ def parse_args():
     parser.add_argument("--tx", type=float, default=0.0)
     parser.add_argument("--ty", type=float, default=-0.05913)
     parser.add_argument("--tz", type=float, default=0.0)
-    parser.add_argument("--qx", type=float, default=-0.5)
-    parser.add_argument("--qy", type=float, default=0.5)
-    parser.add_argument("--qz", type=float, default=-0.5)
+    parser.add_argument("--qx", type=float, default=0.5)
+    parser.add_argument("--qy", type=float, default=-0.5)
+    parser.add_argument("--qz", type=float, default=0.5)
     parser.add_argument("--qw", type=float, default=0.5)
+    parser.add_argument(
+        "--lock-initial-rotation",
+        action="store_true",
+        help="초기 quaternion이 의미하는 회전을 고정하고 translation만 자동 보정",
+    )
+    parser.add_argument(
+        "--prior-rotation-like-initial-sigma-deg",
+        type=float,
+        default=0.0,
+        help="초기 quaternion이 의미하는 rpy를 얼마나 강하게 믿을지에 대한 sigma (deg). 0이면 비활성화",
+    )
     parser.add_argument(
         "--prior-camera-origin-in-source-frame-xyz",
         nargs=3,
@@ -199,7 +230,8 @@ def parse_args():
 def sample_point_cloud(msg, max_points):
     points = []
     width = int(getattr(msg, "width", 0) or 0)
-    estimated = max(1, width)
+    height = int(getattr(msg, "height", 0) or 0)
+    estimated = max(1, width * max(1, height))
     stride = max(1, int(math.ceil(float(estimated) / float(max(1, max_points)))))
     for index, point in enumerate(
         point_cloud2.read_points(
@@ -491,7 +523,8 @@ def plane_matches_board_geometry(plane, args):
 
 
 def select_lidar_board_points(sample, observation, camera_info, args, params, enforce_board_geometry=True):
-    rotation_lidar_to_camera, translation_lidar_to_camera, _ = params_to_transform(params)
+    full_params = expand_params_with_args(params, args)
+    rotation_lidar_to_camera, translation_lidar_to_camera, _ = params_to_transform(full_params)
     points_lidar = np.asarray(sample["points_xyz"], dtype=np.float64)
     points_camera = transform_points_lidar_to_camera(
         points_lidar,
@@ -612,7 +645,8 @@ def build_optimization_observations(camera_info, samples, board, dictionary, arg
 
 
 def residual_function(params, observations, camera_info, args):
-    rotation_lidar_to_camera, translation_lidar_to_camera, _ = params_to_transform(params)
+    full_params = expand_params_with_args(params, args)
+    rotation_lidar_to_camera, translation_lidar_to_camera, _ = params_to_transform(full_params)
     residuals = []
     for observation in observations:
         normal_camera = observation["board_normal_camera"]
@@ -667,6 +701,17 @@ def residual_function(params, observations, camera_info, args):
         sigma = max(1e-6, float(args.prior_camera_origin_sigma_m))
         prior_residual = (camera_origin_in_lidar - np.asarray(prior_origin, dtype=np.float64)) / sigma
         residuals.extend(prior_residual.tolist())
+
+    rotation_prior_sigma_deg = float(
+        getattr(args, "prior_rotation_like_initial_sigma_deg", 0.0) or 0.0
+    )
+    initial_rpy_prior_deg = getattr(args, "_initial_rpy_prior_deg", None)
+    if rotation_prior_sigma_deg > 0.0 and initial_rpy_prior_deg is not None:
+        sigma = max(1e-6, rotation_prior_sigma_deg)
+        prior_rpy = np.asarray(initial_rpy_prior_deg, dtype=np.float64)
+        current_rpy = np.asarray(full_params[3:6], dtype=np.float64)
+        wrapped_delta = (current_rpy - prior_rpy + 180.0) % 360.0 - 180.0
+        residuals.extend((wrapped_delta / sigma).tolist())
     return np.asarray(residuals, dtype=np.float64)
 
 
@@ -674,7 +719,8 @@ def save_yaml(output_path, camera_info, source_frame, params, observations, iter
     directory = os.path.dirname(output_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    rotation_lidar_to_camera, translation_lidar_to_camera, quaternion_xyzw = params_to_transform(params)
+    full_params = np.asarray(params, dtype=np.float64).reshape(-1)
+    rotation_lidar_to_camera, translation_lidar_to_camera, quaternion_xyzw = params_to_transform(full_params)
     camera_origin_in_lidar = -rotation_lidar_to_camera.T.dot(translation_lidar_to_camera)
     baseline_distance_m = float(np.linalg.norm(camera_origin_in_lidar))
     content = []
@@ -734,7 +780,7 @@ def main():
     initial_roll, initial_pitch, initial_yaw = euler_from_quaternion(
         (args.qx, args.qy, args.qz, args.qw)
     )
-    params = np.array(
+    initial_full_params = np.array(
         [
             float(args.tx),
             float(args.ty),
@@ -745,6 +791,15 @@ def main():
         ],
         dtype=np.float64,
     )
+    args._initial_rpy_prior_deg = (
+        float(math.degrees(initial_roll)),
+        float(math.degrees(initial_pitch)),
+        float(math.degrees(initial_yaw)),
+    )
+    if bool(args.lock_initial_rotation):
+        params = initial_full_params[:3].copy()
+    else:
+        params = initial_full_params.copy()
 
     observations = []
     for iteration in range(max(1, int(args.outer_iterations))):
@@ -796,9 +851,9 @@ def main():
                 params[0],
                 params[1],
                 params[2],
-                params[3],
-                params[4],
-                params[5],
+                expand_params_with_args(params, args)[3],
+                expand_params_with_args(params, args)[4],
+                expand_params_with_args(params, args)[5],
             )
         )
 
@@ -806,7 +861,7 @@ def main():
         args.output,
         camera_info,
         samples[0]["cloud_frame_id"],
-        params,
+        expand_params_with_args(params, args),
         observations,
         args.outer_iterations,
     )
