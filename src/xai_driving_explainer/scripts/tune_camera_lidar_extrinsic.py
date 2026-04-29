@@ -4,6 +4,7 @@ import math
 import os
 import sys
 
+import numpy as np
 import rosbag
 import sensor_msgs.point_cloud2 as point_cloud2
 
@@ -65,6 +66,18 @@ def euler_from_quaternion(quaternion_xyzw):
     return (roll, pitch, yaw)
 
 
+def rotation_matrix_from_quaternion(quaternion_xyzw):
+    x, y, z, w = quaternion_normalize(quaternion_xyzw)
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
 def rotate_point_by_quaternion(point_xyz, quaternion_xyzw):
     px, py, pz = point_xyz
     qx, qy, qz, qw = quaternion_xyzw
@@ -95,7 +108,7 @@ def parse_args():
         default="/planning/linefit_ground/non_ground_cloud",
     )
     parser.add_argument("--max-samples", type=int, default=10)
-    parser.add_argument("--image-stride", type=int, default=80)
+    parser.add_argument("--image-stride", type=int, default=20)
     parser.add_argument("--max-sync-dt-s", type=float, default=0.12)
     parser.add_argument("--max-cloud-points", type=int, default=4500)
     parser.add_argument("--forward-m", type=float, default=12.0)
@@ -104,6 +117,15 @@ def parse_args():
     parser.add_argument("--height-abs-m", type=float, default=2.5)
     parser.add_argument("--max-range-m", type=float, default=12.0)
     parser.add_argument("--point-radius-px", type=int, default=2)
+    parser.add_argument("--rows", type=int, default=6)
+    parser.add_argument("--columns", type=int, default=8)
+    parser.add_argument("--checker-size-mm", type=float, default=25.0)
+    parser.add_argument("--marker-size-mm", type=float, default=18.75)
+    parser.add_argument("--dictionary", default="DICT_4X4_50")
+    parser.add_argument("--min-charuco-corners", type=int, default=8)
+    parser.add_argument("--bbox-padding-px", type=float, default=40.0)
+    parser.add_argument("--selection-radius-m", type=float, default=1.2)
+    parser.add_argument("--selection-plane-slab-m", type=float, default=0.40)
     parser.add_argument("--tx", type=float, default=0.0)
     parser.add_argument("--ty", type=float, default=-0.05913)
     parser.add_argument("--tz", type=float, default=0.0)
@@ -147,6 +169,23 @@ def sample_point_cloud(msg, max_points):
     return points
 
 
+def build_charuco_board(args):
+    if not hasattr(cv2, "aruco"):
+        return None, None
+    dictionary_id = getattr(cv2.aruco, str(args.dictionary), None)
+    if dictionary_id is None:
+        return None, None
+    dictionary = cv2.aruco.Dictionary_get(dictionary_id)
+    board = cv2.aruco.CharucoBoard_create(
+        int(args.columns),
+        int(args.rows),
+        float(args.checker_size_mm) / 1000.0,
+        float(args.marker_size_mm) / 1000.0,
+        dictionary,
+    )
+    return dictionary, board
+
+
 def camera_info_from_msg(msg):
     k_values = list(msg.K)
     return {
@@ -157,6 +196,7 @@ def camera_info_from_msg(msg):
         "fy": float(k_values[4] or 0.0),
         "cx": float(k_values[2] or 0.0),
         "cy": float(k_values[5] or 0.0),
+        "distortion": np.array(list(msg.D), dtype=np.float32),
     }
 
 
@@ -179,6 +219,7 @@ def camera_info_from_args(args):
         "fy": float(args.fy),
         "cx": float(args.cx),
         "cy": float(args.cy),
+        "distortion": np.zeros((5,), dtype=np.float32),
     }
 
 
@@ -193,11 +234,77 @@ def load_camera_info_from_bag(bag_path, camera_info_topic):
     return None
 
 
+def detect_charuco_observation(image_bgr, camera_info, board, dictionary, args):
+    if board is None or dictionary is None:
+        return None
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    detector_params = cv2.aruco.DetectorParameters_create()
+    corners, ids, _ = cv2.aruco.detectMarkers(gray, dictionary, parameters=detector_params)
+    marker_count = 0 if ids is None else int(len(ids))
+    if marker_count <= 0:
+        return None
+
+    retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+        corners,
+        ids,
+        gray,
+        board,
+    )
+    charuco_count = 0 if charuco_ids is None else int(len(charuco_ids))
+    if charuco_count < max(4, int(args.min_charuco_corners)):
+        return None
+
+    camera_matrix = np.array(
+        [
+            [camera_info["fx"], 0.0, camera_info["cx"]],
+            [0.0, camera_info["fy"], camera_info["cy"]],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    distortion = np.asarray(camera_info.get("distortion", np.zeros((5,), dtype=np.float32)))
+    ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
+        charuco_corners,
+        charuco_ids,
+        board,
+        camera_matrix,
+        distortion,
+        None,
+        None,
+    )
+    if not ok:
+        return None
+
+    rotation_board_to_camera, _ = cv2.Rodrigues(rvec)
+    board_points = np.asarray(board.chessboardCorners, dtype=np.float32)
+    board_center_board = np.mean(board_points, axis=0)
+    board_center_camera = (
+        rotation_board_to_camera.dot(board_center_board.reshape(3, 1)) + tvec
+    ).reshape(3)
+    board_normal_camera = rotation_board_to_camera[:, 2]
+    board_normal_camera = board_normal_camera / max(
+        1e-9, np.linalg.norm(board_normal_camera)
+    )
+    bbox_points = charuco_corners.reshape(-1, 2)
+    bbox_min = np.min(bbox_points, axis=0) - float(args.bbox_padding_px)
+    bbox_max = np.max(bbox_points, axis=0) + float(args.bbox_padding_px)
+    return {
+        "marker_count": marker_count,
+        "charuco_count": charuco_count,
+        "charuco_corners": charuco_corners.reshape(-1, 2),
+        "bbox_min": bbox_min,
+        "bbox_max": bbox_max,
+        "board_center_camera": board_center_camera,
+        "board_normal_camera": board_normal_camera,
+    }
+
+
 def load_samples(args):
     bridge = CvBridge()
     samples = []
     latest_cloud = None
     camera_info = camera_info_from_args(args)
+    dictionary, board = build_charuco_board(args)
     accepted_images = 0
     bag = rosbag.Bag(args.bag)
     try:
@@ -228,16 +335,20 @@ def load_samples(args):
                 continue
 
             image_bgr = decode_ros_image(bridge, msg)
-            samples.append(
-                {
-                    "stamp": image_stamp,
-                    "image_bgr": image_bgr,
-                    "cloud_frame_id": latest_cloud["frame_id"],
-                    "points_xyz": list(latest_cloud["points_xyz"]),
-                }
+            sample = {
+                "stamp": image_stamp,
+                "image_bgr": image_bgr,
+                "cloud_frame_id": latest_cloud["frame_id"],
+                "points_xyz": list(latest_cloud["points_xyz"]),
+            }
+            sample["charuco_observation"] = detect_charuco_observation(
+                image_bgr,
+                camera_info,
+                board,
+                dictionary,
+                args,
             )
-            if len(samples) >= max(1, args.max_samples):
-                break
+            samples.append(sample)
     finally:
         bag.close()
 
@@ -254,6 +365,18 @@ def load_samples(args):
         )
     if not samples:
         raise RuntimeError("동기화된 image/point_cloud 샘플을 만들지 못했습니다.")
+    prioritized = [sample for sample in samples if sample.get("charuco_observation") is not None]
+    if prioritized:
+        prioritized.sort(
+            key=lambda sample: (
+                int(sample["charuco_observation"]["charuco_count"]),
+                int(sample["charuco_observation"]["marker_count"]),
+            ),
+            reverse=True,
+        )
+        samples = prioritized[: max(1, int(args.max_samples))]
+    else:
+        samples = samples[: max(1, int(args.max_samples))]
     return camera_info, samples
 
 
@@ -270,6 +393,28 @@ def render_projection(sample, camera_info, state, args):
     yaw_rad = math.radians(state["yaw_deg"])
     quaternion_xyzw = quaternion_from_euler(roll_rad, pitch_rad, yaw_rad)
     translation = (state["tx"], state["ty"], state["tz"])
+    rotation_lidar_to_camera = rotation_matrix_from_quaternion(quaternion_xyzw)
+    translation_lidar_to_camera = np.array(translation, dtype=np.float64)
+
+    charuco_observation = sample.get("charuco_observation")
+    highlighted_board_count = 0
+    board_bbox = None
+    board_center_lidar = None
+    board_normal_lidar = None
+    if charuco_observation is not None:
+        board_bbox = (
+            charuco_observation["bbox_min"],
+            charuco_observation["bbox_max"],
+        )
+        board_center_lidar = rotation_lidar_to_camera.T.dot(
+            charuco_observation["board_center_camera"] - translation_lidar_to_camera
+        )
+        board_normal_lidar = rotation_lidar_to_camera.T.dot(
+            charuco_observation["board_normal_camera"]
+        )
+        board_normal_lidar = board_normal_lidar / max(
+            1e-9, float(np.linalg.norm(board_normal_lidar))
+        )
 
     projected_count = 0
     for point_xyz in sample["points_xyz"]:
@@ -291,14 +436,68 @@ def render_projection(sample, camera_info, state, args):
         if u < 0.0 or u >= float(image_w) or v < 0.0 or v >= float(image_h):
             continue
         projected_count += 1
+        point_color = (255, 255, 0)
+        if (
+            board_bbox is not None
+            and board_center_lidar is not None
+            and board_normal_lidar is not None
+        ):
+            bbox_min, bbox_max = board_bbox
+            image_match = (
+                u >= float(bbox_min[0])
+                and u <= float(bbox_max[0])
+                and v >= float(bbox_min[1])
+                and v <= float(bbox_max[1])
+            )
+            radius_match = (
+                math.sqrt(
+                    (px - float(board_center_lidar[0])) ** 2
+                    + (py - float(board_center_lidar[1])) ** 2
+                    + (pz - float(board_center_lidar[2])) ** 2
+                )
+                <= float(args.selection_radius_m)
+            )
+            plane_offset = -float(np.dot(board_normal_lidar, board_center_lidar))
+            plane_match = (
+                abs(
+                    (px * float(board_normal_lidar[0]))
+                    + (py * float(board_normal_lidar[1]))
+                    + (pz * float(board_normal_lidar[2]))
+                    + plane_offset
+                )
+                <= float(args.selection_plane_slab_m)
+            )
+            if image_match and radius_match and plane_match:
+                point_color = (0, 0, 255)
+                highlighted_board_count += 1
         cv2.circle(
             image_bgr,
             (int(round(u)), int(round(v))),
             max(1, int(args.point_radius_px)),
-            (255, 255, 0),
+            point_color,
             -1,
             lineType=cv2.LINE_AA,
         )
+
+    if charuco_observation is not None:
+        bbox_min, bbox_max = board_bbox
+        cv2.rectangle(
+            image_bgr,
+            (int(round(bbox_min[0])), int(round(bbox_min[1]))),
+            (int(round(bbox_max[0])), int(round(bbox_max[1]))),
+            (0, 255, 255),
+            2,
+            lineType=cv2.LINE_AA,
+        )
+        for point_uv in charuco_observation["charuco_corners"]:
+            cv2.circle(
+                image_bgr,
+                (int(round(point_uv[0])), int(round(point_uv[1]))),
+                4,
+                (0, 255, 0),
+                -1,
+                lineType=cv2.LINE_AA,
+            )
 
     overlay = image_bgr.copy()
     cv2.rectangle(overlay, (8, 8), (image_w - 8, 150), (0, 0, 0), -1)
@@ -315,6 +514,10 @@ def render_projection(sample, camera_info, state, args):
         ),
         "rpy = [{:.2f}, {:.2f}, {:.2f}] deg".format(
             state["roll_deg"], state["pitch_deg"], state["yaw_deg"]
+        ),
+        "charuco = {} | board candidate pts = {}".format(
+            0 if charuco_observation is None else int(charuco_observation["charuco_count"]),
+            int(highlighted_board_count),
         ),
         "step t={:.3f}m r={:.2f}deg | n/p sample | s save | q quit".format(
             state["translation_step_m"], state["rotation_step_deg"]
