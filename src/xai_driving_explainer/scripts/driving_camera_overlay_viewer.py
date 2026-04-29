@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+from collections import deque
 
 import cv2
 import numpy as np
@@ -96,10 +97,12 @@ class DrivingCameraOverlayViewer:
         self.vlm_image_match_tolerance_s = float(
             rospy.get_param("~vlm_image_match_tolerance_s", 0.75)
         )
+        self.vlm_buffer_size = int(rospy.get_param("~vlm_buffer_size", 40))
 
         self.bridge = CvBridge()
         self.latest_explanation = {}
         self.latest_vlm = {}
+        self.vlm_buffer = deque(maxlen=max(5, self.vlm_buffer_size))
         self.text_font = None
         self.focus_font = None
         self._init_fonts()
@@ -156,6 +159,8 @@ class DrivingCameraOverlayViewer:
 
     def _on_vlm(self, message):
         self.latest_vlm = self._parse_json(message)
+        if self.latest_vlm:
+            self.vlm_buffer.append(self.latest_vlm)
 
     def _region_to_rect(self, width, height, hint):
         if not hint.get("available"):
@@ -223,35 +228,136 @@ class DrivingCameraOverlayViewer:
         return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
     def _select_vlm_for_image(self, image_stamp):
-        vlm = self.latest_vlm or {}
-        if not vlm:
+        candidates = list(self.vlm_buffer)
+        if not candidates:
             return None
-        if vlm.get("status") not in ("ok", "partial_ok"):
-            return None
-        vlm_image_stamp = vlm.get("image_stamp")
-        if image_stamp is None or vlm_image_stamp is None:
-            return None
-        try:
-            delta = abs(float(vlm_image_stamp) - float(image_stamp))
-        except Exception:
-            return None
-        if delta > self.vlm_image_match_tolerance_s:
-            return None
-        return vlm
+        best = None
+        best_delta = None
+        for vlm in candidates:
+            if vlm.get("status") not in ("ok", "partial_ok"):
+                continue
+            vlm_image_stamp = vlm.get("image_stamp")
+            if image_stamp is None or vlm_image_stamp is None:
+                continue
+            try:
+                delta = abs(float(vlm_image_stamp) - float(image_stamp))
+            except Exception:
+                continue
+            if delta > self.vlm_image_match_tolerance_s:
+                continue
+            if best is None or delta < best_delta:
+                best = vlm
+                best_delta = delta
+        return best
+
+    def _draw_detector_boxes(self, image_bgr, payload):
+        detections = (
+            (payload or {})
+            .get("detector_details", {})
+            .get("detections", [])
+        )
+        if not detections:
+            return image_bgr
+        selected = (payload or {}).get("detector_details", {}).get("selected_detection") or {}
+        selected_bbox = tuple(selected.get("bbox_xyxy_full") or [])
+        annotated = image_bgr
+        for item in detections:
+            bbox = item.get("bbox_xyxy_full") or []
+            if len(bbox) != 4:
+                continue
+            x0, y0, x1, y1 = [int(v) for v in bbox]
+            is_selected = tuple(bbox) == selected_bbox and len(selected_bbox) == 4
+            thickness = 3 if is_selected else 2
+            color = (0, 255, 255)
+            cv2.rectangle(annotated, (x0, y0), (x1, y1), color, thickness)
+            label = item.get("label_ko") or item.get("label") or "object"
+            confidence = item.get("confidence")
+            memory_id = item.get("memory_id")
+            track_key = item.get("track_key")
+            id_parts = []
+            if memory_id:
+                id_parts.append(str(memory_id))
+            if track_key:
+                id_parts.append(str(track_key))
+            if id_parts:
+                label = "[{}] {}".format(" / ".join(id_parts), label)
+            if confidence is not None:
+                label = "{} {:.2f}".format(label, float(confidence))
+            annotated = self._draw_unicode_text(
+                annotated,
+                label,
+                (max(5, x0), max(20, y0 - 8)),
+                color,
+                self.text_font,
+                max_width_px=max(100, annotated.shape[1] - x0 - 10),
+                line_height=self.line_height,
+                )
+        return annotated
+
+    def _draw_pointcloud_overlay(self, image_bgr, payload):
+        pointcloud_visual = (
+            (payload or {})
+            .get("detector_details", {})
+            .get("pointcloud_visual", {})
+        )
+        if not isinstance(pointcloud_visual, dict) or not pointcloud_visual.get("available"):
+            return image_bgr
+
+        annotated = image_bgr
+        points = pointcloud_visual.get("projected_points_xy_full") or []
+        bbox = pointcloud_visual.get("bbox_xyxy_full") or []
+        point_radius = int(max(1, pointcloud_visual.get("point_radius_px") or 2))
+        for point_xy in points:
+            if len(point_xy) != 2:
+                continue
+            px = int(point_xy[0])
+            py = int(point_xy[1])
+            cv2.circle(
+                annotated,
+                (px, py),
+                point_radius,
+                (255, 255, 0),
+                -1,
+                lineType=cv2.LINE_AA,
+            )
+
+        if len(bbox) == 4:
+            x0, y0, x1, y1 = [int(value) for value in bbox]
+            cv2.rectangle(annotated, (x0, y0), (x1, y1), (255, 120, 0), 2)
+            label = "LiDAR {}pts".format(int(pointcloud_visual.get("point_count") or 0))
+            annotated = self._draw_unicode_text(
+                annotated,
+                label,
+                (max(5, x0), max(20, y1 + 20)),
+                (255, 180, 0),
+                self.text_font,
+                max_width_px=max(100, annotated.shape[1] - x0 - 10),
+                line_height=self.line_height,
+            )
+        return annotated
 
     def _annotate_image(self, image_bgr, image_stamp=None):
         explanation = self.latest_explanation or {}
         vlm = self._select_vlm_for_image(image_stamp)
-        hint = explanation.get("visual_grounding_hint", {})
+        selected = (vlm or {}).get("detector_details", {}).get("selected_detection") or {}
+        memory_id = selected.get("memory_id")
+        track_key = selected.get("track_key")
+        selected_id_text = "-"
+        selected_id_parts = []
+        if memory_id:
+            selected_id_parts.append(str(memory_id))
+        if track_key:
+            selected_id_parts.append(str(track_key))
+        if selected_id_parts:
+            selected_id_text = " / ".join(selected_id_parts)
 
         annotated = self._draw_overlay_panel(image_bgr.copy())
-        h, w = annotated.shape[:2]
-        x0, y0, x1, y1 = self._region_to_rect(w, h, hint)
-
-        cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 255, 255), 2)
+        annotated = self._draw_pointcloud_overlay(annotated, vlm)
+        annotated = self._draw_detector_boxes(annotated, vlm)
 
         lines = [
             "event: {}".format(explanation.get("event_label", "-")),
+            "id: {}".format(selected_id_text),
             "final: {}".format(
                 (vlm or {}).get(
                     "final_combined_explanation_ko",
