@@ -183,6 +183,25 @@ launch 터미널에서 기대하는 로그:
 
 ## Camera-LiDAR Extrinsic 튜너
 
+카메라 intrinsic을 먼저 다시 맞추고 싶다면, 같은 ChArUco bag로 아래 스크립트를 사용할 수 있다.
+
+```bash
+cd ~/code/xai_autonomy_driving_explainer
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+/usr/bin/python3 src/xai_driving_explainer/scripts/calibrate_camera_intrinsic_charuco.py \
+  --bag /home/byeongjae/bagfiles/yongbong_checkerboard_v2.bag
+```
+
+기본값은 현재 출력한 보드 기준으로 잡혀 있다.
+
+- ChArUco `6 x 8`
+- Checker size `25 mm`
+- Marker size `18.75 mm`
+- Dictionary `DICT_4X4_50`
+
+결과는 `~/camera_intrinsic_charuco.yaml`에 저장되며, `fx/fy/cx/cy`와 distortion이 함께 기록된다.
+
 설계도면이나 정적 TF가 없을 때는, bag를 보면서 카메라 위에 point cloud를 직접 투영해
 `tx/ty/tz/roll/pitch/yaw`를 수동으로 맞추는 편이 가장 현실적이다.
 
