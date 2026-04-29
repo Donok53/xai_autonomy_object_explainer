@@ -226,7 +226,7 @@ class DrivingCameraOverlayViewer:
             self.vlm_buffer.append(self.latest_vlm)
 
     def _on_point_cloud(self, message):
-        if self.render_mode != "lidar_only":
+        if self.render_mode not in ("lidar_only", "side_by_side"):
             return
 
         points = []
@@ -1023,6 +1023,58 @@ class DrivingCameraOverlayViewer:
                 break
         return annotated
 
+    def _compose_side_by_side(self, camera_image_bgr, image_stamp=None):
+        left = camera_image_bgr.copy()
+        right = self._annotate_lidar_canvas()
+
+        target_height = max(left.shape[0], right.shape[0])
+
+        def resize_to_height(image_bgr, height_px):
+            if image_bgr.shape[0] == height_px:
+                return image_bgr
+            scale = float(height_px) / float(max(1, image_bgr.shape[0]))
+            target_width = max(1, int(round(image_bgr.shape[1] * scale)))
+            return cv2.resize(
+                image_bgr,
+                (target_width, height_px),
+                interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR,
+            )
+
+        left = resize_to_height(left, target_height)
+        right = resize_to_height(right, target_height)
+
+        separator = np.zeros((target_height, 10, 3), dtype=np.uint8)
+        separator[:] = (35, 35, 35)
+        combined = np.hstack([left, separator, right])
+
+        cv2.rectangle(combined, (0, 0), (150, 34), (0, 0, 0), -1)
+        cv2.rectangle(
+            combined,
+            (left.shape[1] + separator.shape[1], 0),
+            (left.shape[1] + separator.shape[1] + 150, 34),
+            (0, 0, 0),
+            -1,
+        )
+        combined = self._draw_unicode_text(
+            combined,
+            "camera",
+            (12, 8),
+            (255, 255, 255),
+            self.text_font,
+            max_width_px=120,
+            line_height=self.line_height,
+        )
+        combined = self._draw_unicode_text(
+            combined,
+            "lidar",
+            (left.shape[1] + separator.shape[1] + 12, 8),
+            (255, 255, 255),
+            self.text_font,
+            max_width_px=120,
+            line_height=self.line_height,
+        )
+        return combined
+
     def _render_and_publish_lidar_frame(self):
         if self.render_mode != "lidar_only":
             return
@@ -1051,7 +1103,13 @@ class DrivingCameraOverlayViewer:
             rospy.logwarn("failed to decode overlay image: %s", str(exc))
             return
 
-        annotated = self._annotate_image(image, message.header.stamp.to_sec())
+        if self.render_mode == "side_by_side":
+            annotated = self._compose_side_by_side(
+                image,
+                message.header.stamp.to_sec(),
+            )
+        else:
+            annotated = self._annotate_image(image, message.header.stamp.to_sec())
 
         if self.display_window:
             try:

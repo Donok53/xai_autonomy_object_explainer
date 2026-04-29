@@ -22,7 +22,7 @@
   <arg name="vlm_image_detail" default="low"/>
   <arg name="vlm_log_explanation" default="true"/>
   <arg name="camera_display_window" default="true"/>
-  <arg name="camera_render_mode" default="lidar_only"/>
+  <arg name="camera_render_mode" default="side_by_side"/>
   <arg name="camera_lidar_render_style" default="bev"/>
   <arg name="camera_show_detector_boxes" default="false"/>
   <arg name="camera_show_pointcloud_bbox" default="false"/>
